@@ -11,6 +11,8 @@
 
   <modules>
     <module>agent</module>
+    <module>block-mapper</module>
+    <module>spark-jobs</module>
   </modules>
 
   <properties>

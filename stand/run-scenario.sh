@@ -108,3 +108,58 @@ for attempt in 1 2 3 4 5; do
 done
 cat "${WORK}/events.txt"
 [[ -n "${ok}" ]] || { echo "FAIL: events in HDFS do not match the scenario" >&2; exit 1; }
+
+# Warehouse: table folding over staging directories, varying depth, and an unfinished job.
+step "warehouse: alice stages then moves, bob writes one level deeper, carol stays in staging"
+as_hdfs 'hdfs dfs -mkdir -p /warehouse && hdfs dfs -chmod 1777 /warehouse'
+wh_since=$(now_ms)
+as_user tr-client alice 'S=/warehouse/db1/t1/.hive-staging_hive_1/-ext-10000/dt=2026-11-06 \
+  && hdfs dfs -mkdir -p $S /warehouse/db1/t1/dt=2026-11-06 && hdfs dfs -put -f /tmp/1m $S/000000_0 \
+  && hdfs dfs -mv $S/000000_0 /warehouse/db1/t1/dt=2026-11-06/000000_0'
+as_user tr-client bob 'D=/warehouse/extra/db2/t2/dt=2026-11-06 \
+  && hdfs dfs -mkdir -p $D && hdfs dfs -put -f /tmp/2m $D/part-0'
+as_user tr-client carol 'S=/warehouse/db3/t3/.hive-staging_hive_2/-ext-10000 \
+  && hdfs dfs -mkdir -p $S && hdfs dfs -put -f /tmp/1m $S/000000_0'
+wh_until=$(now_ms)
+dt=$(date -u +%F)
+
+step "fsimage → block-mapper (on tr-nn)"
+as_hdfs "rm -rf /tmp/fsimg && mkdir -p /tmp/fsimg \
+  && hdfs dfsadmin -safemode enter >/dev/null && hdfs dfsadmin -saveNamespace >/dev/null \
+  && hdfs dfsadmin -safemode leave >/dev/null \
+  && hdfs dfsadmin -D dfs.namenode.http-address=tr-nn.traffic-net:9870 -fetchImage /tmp/fsimg >/dev/null \
+  && hdfs dfs -rm -r -f -skipTrash /data/hdfs-traffic/fsimage/dt=${dt} >/dev/null \
+  && hadoop jar /opt/block-mapper/block-mapper-0.1.0-SNAPSHOT-hadoop-*.jar \
+       org.hadooptraffic.mapper.FsImageMapper -i \$(ls /tmp/fsimg/fsimage_* | grep -v md5 | sort | tail -1) \
+       -o hdfs:///data/hdfs-traffic/fsimage/dt=${dt}"
+
+step "spark-jobs: CompactEvents + ResolvePaths, write traffic by table"
+# The query goes through a file: no shell quoting of backticks inside as_hdfs.
+cat > "${WORK}/tables.sql" <<SQL
+SELECT \`user\`, op, role, table_dir, sum(bytes)
+FROM orc.\`hdfs:///data/hdfs-traffic/event_path/dt=${dt}\`
+WHERE ts BETWEEN ${wh_since} AND ${wh_until} AND role = 'client' AND op = 'write'
+GROUP BY 1, 2, 3, 4;
+SQL
+docker cp "${WORK}/tables.sql" tr-nn:/tmp/tables.sql
+JOBS=/opt/spark-jobs/spark-jobs-0.1.0-SNAPSHOT.jar
+SUBMIT="/opt/spark/bin/spark-submit --master local[2] --conf spark.ui.enabled=false"
+ok=""
+for attempt in 1 2 3 4 5; do
+  sleep 15
+  for dn in tr-dn1 tr-dn2 tr-dn3; do
+    docker exec "${dn}" runuser -u hdfs -- /opt/hdfs-traffic-deploy/upload-events.sh \
+      -d /var/log/hdfs-traffic -r /data/hdfs-traffic/raw \
+      -k /etc/security/keytabs/host.keytab -p "hdfs/${dn}.traffic-net@${REALM}" >/dev/null
+  done
+  if as_hdfs "cd /tmp \
+      && ${SUBMIT} --class org.hadooptraffic.spark.CompactEvents ${JOBS} --dt ${dt} --catalog none \
+      && ${SUBMIT} --class org.hadooptraffic.spark.ResolvePaths ${JOBS} --dt ${dt} --catalog none \
+      && /opt/spark/bin/spark-sql -S --master local[1] --conf spark.ui.enabled=false -f /tmp/tables.sql" \
+      2>/dev/null | python3 -I "${STAND_DIR}/check_traffic.py" tables > "${WORK}/tables.txt"; then
+    ok=1
+    break
+  fi
+done
+cat "${WORK}/tables.txt"
+[[ -n "${ok}" ]] || { echo "FAIL: traffic by table does not match the scenario" >&2; exit 1; }

@@ -41,5 +41,23 @@ else
   echo "[prepare] staged $(du -sh "${DEST}" | cut -f1) into ${DEST}"
 fi
 
+SPARK_VERSION=3.5.1
+SPARK_NAME="spark-${SPARK_VERSION}-bin-hadoop3"
+SPARK_DIR="${STAND_DIR}/dist/spark/${SPARK_NAME}"
+if [[ ! -x "${SPARK_DIR}/bin/spark-submit" ]]; then
+  mkdir -p "${STAND_DIR}/dist/spark"
+  url="https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/${SPARK_NAME}.tgz"
+  echo "[prepare] downloading ${url}"
+  curl -fL --retry 3 -o "${STAND_DIR}/dist/spark/${SPARK_NAME}.tgz" "${url}"
+  expected=$(curl -fsL "${url}.sha512" | tr -d ' \n\r' | grep -oiE '[0-9a-f]{128}' | head -1 \
+    | tr 'A-F' 'a-f')
+  actual=$(shasum -a 512 "${STAND_DIR}/dist/spark/${SPARK_NAME}.tgz" | cut -d' ' -f1)
+  [[ -n "${expected}" && "${expected}" == "${actual}" ]] \
+    || { echo "[prepare] sha512 mismatch for ${SPARK_NAME}.tgz" >&2; exit 1; }
+  tar xzf "${STAND_DIR}/dist/spark/${SPARK_NAME}.tgz" -C "${STAND_DIR}/dist/spark"
+  rm "${STAND_DIR}/dist/spark/${SPARK_NAME}.tgz"
+fi
+echo "[prepare] Spark ${SPARK_VERSION} staged in ${SPARK_DIR}"
+
 jar="${STAND_DIR}/../agent/target/hdfs-traffic-agent-0.1.0-SNAPSHOT.jar"
 [[ -f "${jar}" ]] || echo "[prepare] WARNING: ${jar} is missing, build it with mvn package (JDK 8)" >&2

@@ -212,6 +212,245 @@ journalctl -u hdfs-traffic-upload.service         # что отправлено,
 
 Собственные записи загрузки в HDFS видны как трафик сервисного пользователя.
 
+## Сопоставление блоков и файлов (block-mapper)
+
+События содержат только id блоков. `block-mapper/` превращает скачанный fsimage в модель
+inode (блок → inode, inode → родитель и имя), по которой Spark-задачи сопоставляют
+`file_block_id` события с текущим путём файла (само сопоставление делают Spark-задачи,
+см. «Отчёты»).
+
+Сборка, отдельно для каждой версии Hadoop:
+
+```bash
+mvn clean verify -P hadoop-3.1.1      # HDP
+mvn clean verify -P hadoop-3.3.6      # Apache Hadoop 3.3.x
+```
+
+Результат — `block-mapper/target/block-mapper-<version>-hadoop-<версия hadoop>.jar`.
+Используйте jar, собранный под версию Hadoop вашего кластера: сгенерированные
+protobuf-классы в 3.1 и 3.3 различаются. В jar упакованы `orc-core` 1.5.13,
+`orc-shims`, `hive-storage-api`, `aircompressor`, `commons-lang` 2.6 и `threeten-extra`, все
+перенесены (relocate) в `org.hadooptraffic.mapper.shaded`, чтобы jar-файлы Hive из
+`HADOOP_CLASSPATH` их не подменяли; `protobuf-java` 2.5.0 берётся из Hadoop. Hadoop 3.4+
+(где protobuf 2.5 необязателен) не поддерживается.
+
+Запускайте на скачанном образе, а не на собственном хранилище NameNode. `-i` — локальный
+файл (скачанный образ), `-o` — любой URI файловой системы Hadoop:
+
+```bash
+hdfs dfsadmin -fetchImage /data/fsimg      # от администратора кластера HDFS
+hadoop jar block-mapper-0.1.0-SNAPSHOT-hadoop-3.1.1.jar org.hadooptraffic.mapper.FsImageMapper \
+  -i /data/fsimg/fsimage_<txid> -o hdfs:///data/hdfs-traffic/fsimage/dt=<YYYY-MM-DD> [--format tsv]
+```
+
+`fetchImage` отдаёт последний checkpoint NameNode, а не живое пространство имён: файлов,
+созданных или переименованных после него, в образе нет (как ежедневный скрипт ждёт свежий
+checkpoint, см. «Отчёты»). Никогда не вызывайте `saveNamespace` на боевом NameNode, чтобы
+получить образ новее.
+
+Результат — по одному файлу на таблицу, `<out>/<table>/part-00000.orc`:
+
+| Таблица | Колонки |
+|---|---|
+| `inode` | `inode_id`, `type` (`F` файл, `D` каталог, `S` symlink), `name` |
+| `edge` | `child_id`, `parent_id` |
+| `block_inode` | `block_id`, `inode_id` |
+| `meta` | `txid`, `image_file`, `parsed_at` (epoch в миллисекундах) |
+
+По умолчанию ORC: версия файла 0.12, ZLIB, bloom-фильтры на `inode_id`, `child_id` и
+`block_id`; читается Hive 3.1 и Spark 3.5. `--format tsv` пишет `part-00000.tsv` с теми же
+колонками через табуляцию; `\`, табуляция, перевод строки и возврат каретки в именах
+экранируются как `\\`, `\t`, `\n`, `\r`.
+
+Mapper пишет в скрытый соседний каталог `<parent>/.<name>._tmp` (например
+`fsimage/.dt=2026-11-06._tmp`, Spark и Hive не примут его за партицию) и при успехе
+переименовывает его в `<out>`; существующий `<out>` никогда не перезаписывается. Код выхода
+0 — успех, 1 — сбой, 2 — ошибка в аргументах; сообщения начинаются с `block-mapper:`. Память:
+пространство имён читается потоком; в памяти хранятся ссылки снапшотов и буферы записи ORC
+(их ограничивает memory manager ORC).
+
+Ограничения:
+
+- Inode, видимые только в снапшотах (удалённые после снапшота), не имеют родителя и
+  остаются неразрешёнными.
+- Сжатый образ, сохранённый параллельно (`dfs.image.parallel.save=true` вместе с
+  `dfs.image.compress=true`, Hadoop 3.3), отклоняется: скачайте образ, сохранённый без
+  одной из этих опций.
+
+## Отчёты (spark-jobs)
+
+`spark-jobs/` — две Spark-задачи, которые превращают доставленные события и результат
+block-mapper в трафик по минутам, пользователям и таблицам. Сборка (Spark 3.5.1,
+Scala 2.12; Spark 2 не поддерживается):
+
+```bash
+mvn clean verify
+```
+
+Результат — `spark-jobs/target/spark-jobs-<version>.jar`, один для обеих версий Hadoop.
+На HDP 3.1 запускайте его отдельным дистрибутивом `spark-3.5.1-bin-hadoop3`, а не
+Spark 2 кластера.
+
+Обе задачи принимают `--dt YYYY-MM-DD` (обязательно), `--root <URI каталога>` (по умолчанию
+`/data/hdfs-traffic`), `--db <имя>` (по умолчанию `hdfs_traffic`) и `--catalog hive|none`
+(по умолчанию `hive`); `ResolvePaths` также принимает `--image-dt YYYY-MM-DD`.
+
+- `CompactEvents` читает `<root>/raw/dt=D/dn=*/*.jsonl` и пишет `<root>/events/dt=D`.
+  Битые строки считаются и пропускаются; файлы `*._COPYING_` незавершённого `put` не
+  читаются. Если партиции raw нет, задача падает.
+- `ResolvePaths` соединяет события дня `D` с моделью fsimage и пишет
+  `<root>/event_path/dt=D` (события плюс `inode_id`, `table_dir`; `path` заполнен) и
+  `<root>/traffic_minute/dt=D`. Образ — `--image-dt`, по умолчанию последний
+  `fsimage/dt=YYYY-MM-DD`, в `meta/` которого есть файл `.orc` (скрытые временные
+  каталоги игнорируются). Файл, созданный в день `D`, попадает только в checkpoint,
+  снятый после окончания `D`, поэтому ежедневный скрипт передаёт образ сегодняшнего дня
+  (`--image-dt <сегодня>`), скачанный после послеполуночного checkpoint. Пути — текущие на
+  момент этого checkpoint, переименования уже учтены. События WebHDFS сохраняют `path` из
+  самого события; блоки, которых нет в образе, получают `?`. Если дата выбранного образа не
+  позже `D`, задача пишет в лог WARN: файлы, созданные в день `D`, могут получить `?`.
+
+Каждый запуск перезаписывает только свои партиции, поэтому упавший запуск просто
+повторяют.
+
+| Таблица | Колонки (все партиционированы по `dt`) |
+|---|---|
+| `events` | поля события из JSONL (`ts`, `start`, `dn`, `op_id`, `user`, `op`, `role`, `locality`, `bpid`, `block_id`, `file_block_id`, `bytes`, `est_bytes`, `dur_ms`, `last`, `peer`, `path`) |
+| `fs_inode`, `fs_edge`, `fs_block_inode`, `fs_meta` | таблицы block-mapper; `dt` — дата образа |
+| `event_path` | колонки `events` плюс `inode_id`, `table_dir` |
+| `traffic_minute` | `minute` (epoch в мс начала минуты UTC), `user`, `op`, `role`, `locality`, `table_dir`, `bytes`, `est_bytes`, `ops` (число событий `last`) |
+
+Все таблицы — EXTERNAL ORC с ZLIB (`hive/schema.sql` генерируется из
+`org.hadooptraffic.spark.Ddl`; задачи создают их через `CREATE ... IF NOT EXISTS`).
+Партиции задачи добавляют явно через `ALTER TABLE ... ADD IF NOT EXISTS PARTITION`;
+`MSCK REPAIR TABLE` запускать нельзя: четыре таблицы `fs_*` лежат в одном каталоге образа
+и имеют разные схемы. Задачи читают файлы JSONL и ORC напрямую, поэтому Hive-таблицы над
+сырыми файлами нет.
+
+С `--catalog none` задачи только пишут файлы и ничего не регистрируют.
+
+### Spark 3.5.1 на HDP 3.1 (YARN, Kerberos, Hive metastore 3.1)
+
+Положите в `$SPARK_HOME/conf/spark-defaults.conf` (а не в разовую командную строку):
+
+```
+spark.sql.hive.metastore.version   3.1.3
+spark.sql.hive.metastore.jars      path
+spark.sql.hive.metastore.jars.path file:///usr/hdp/current/hive-client/lib/*
+spark.hadoop.metastore.catalog.default hive
+spark.yarn.populateHadoopClasspath false
+```
+
+Кроме того:
+
+- Скопируйте `hive-site.xml` из `/etc/hive/conf` в `$SPARK_HOME/conf`. Не берите его из
+  `/etc/spark2/conf`: там `metastore.catalog.default=spark`, и таблицы не видны из Hive.
+- В `$SPARK_HOME/conf/spark-env.sh` добавьте
+  `export HADOOP_CONF_DIR=/etc/hadoop/conf YARN_CONF_DIR=/etc/hadoop/conf` (у cron нет
+  окружения).
+- По желанию задайте `spark.yarn.archive` с заранее загруженным архивом jar-файлов Spark,
+  чтобы не отправлять их при каждом запуске.
+
+Путь YARN / Kerberos / metastore стенд не проверяет (на нём Spark работает с
+`--master local` и `--catalog none`). При первом развёртывании проверьте:
+
+1. Один запуск с `--catalog hive` за недавний день проходит.
+2. `SHOW PARTITIONS hdfs_traffic.traffic_minute;` в beeline показывает этот день.
+3. `SELECT * FROM hdfs_traffic.traffic_minute LIMIT 10;` в beeline возвращает строки
+   (Hive читает ORC, записанный Spark).
+4. `ADD PARTITION` в таблицы `fs_*` работает для принципала Spark (после запуска
+   `SHOW PARTITIONS` для `fs_*` показывает новый `dt`).
+5. Возможное исправление: если клиент Spark падает на timeline service YARN, добавьте
+   `spark.hadoop.yarn.timeline-service.enabled false` в `spark-defaults.conf`.
+
+`table_dir` выводится из пути без Hive metastore: отбрасывается имя файла, затем путь
+обрезается по первому компоненту-партиции (`key=value`), служебному (начинается с `.` или
+`_`: `.hive-staging_*`, `_temporary`) или ACID-компоненту Hive (`base_N`, `delta_N_N`,
+`delete_delta_N_N`, у каждого возможен суффикс `_v<n>`). Поэтому staging-файлы, перенесённые
+в таблицу, относятся к ней; файлы, удалённые до следующего checkpoint NameNode (scratch-каталоги
+Hive, staging-jar задач, временные результаты), в образе отсутствуют и дают `?`. Непартиционированная таблица с
+подкаталогами сворачивается на уровень ниже (до подкаталога).
+
+Ограничения:
+
+- События соединяются с образом только по id блока: федеративные кластеры (несколько
+  block pool) не поддерживаются.
+- Цепочка путей глубже 256 уровней или циклическая (повреждённый образ) разрешается в `?`
+  с предупреждением в логе задачи.
+- Inode, видимые только в снапшотах, остаются `?` (см. ограничения block-mapper).
+- Тесты и стенд привязывают драйвер Spark к `127.0.0.1`, поэтому не зависят от разрешения
+  имён хоста.
+
+Пример: таблицы с наибольшей скоростью записи за один час, МБ/с по минутам:
+
+```sql
+SELECT table_dir, SUM(bytes) / 1048576 / 60 AS mb_per_s, minute
+FROM hdfs_traffic.traffic_minute
+WHERE dt = '2026-11-06'
+  AND op IN ('write', 'webhdfs_create', 'webhdfs_append') AND role = 'client'
+  AND minute >= 1793923200000 AND minute < 1793926800000   -- 2026-11-06 00:00-01:00 UTC
+GROUP BY minute, table_dir
+ORDER BY mb_per_s DESC
+LIMIT 20;
+```
+
+### Ежедневный запуск
+
+`deploy/daily-report.sh -n <HTTP-адрес активного NameNode> [-D YYYY-MM-DD] [-r root]
+[-w workdir] [-m mapper.jar] [-j spark-jobs.jar] [-c hive|none] [-k keytab -p principal]
+[-s principal Spark -t keytab Spark]`. Нужны GNU `date`, `flock`, `python3` и
+`curl --negotiate`.
+
+`hdfs dfsadmin -fetchImage` отдаёт последний checkpoint NameNode, а не живое пространство
+имён, и скрипт никогда не вызывает `saveNamespace`. Если `<root>/fsimage/dt=<сегодня>` ещё
+нет, скрипт сначала опрашивает JMX активного NameNode (`LastCheckpointTime`) каждые
+`POLL_SEC` (по умолчанию 300) не дольше `MAX_WAIT_SEC` (по умолчанию 10800), пока не
+появится checkpoint после 00:00 UTC сегодняшнего дня; иначе завершается с понятным
+сообщением. Для этого нужен рабочий checkpointing: standby NameNode (HA) или
+SecondaryNameNode, `dfs.namenode.checkpoint.period` не более 1 часа. В HA передавайте
+активный NameNode (`hdfs haadmin -getAllServiceState`), например `http://nn1.example:50070`
+на HDP. Затем скрипт скачивает образ, запускает mapper в `fsimage/dt=<сегодня>`, после чего
+`CompactEvents` и `ResolvePaths` за предыдущие сутки UTC с `--image-dt <сегодня>`. Чтобы
+заменить устаревший `fsimage/dt=<сегодня>`, сначала удалите его. `-D` перезапускает
+указанный день по последнему образу (без `--image-dt`). Второй запуск при активном первом
+завершается с сообщением (`flock` на `<workdir>/.lock`); скачанный образ удаляется при
+выходе. `SPARK_ARGS` (по умолчанию `--master yarn --deploy-mode client`) и `SPARK_HOME`
+берутся из окружения.
+
+Пользователи и права:
+
+- Скрипт запускается от администратора кластера HDFS (член `dfs.cluster.administrators`,
+  например `hdfs`): это нужно `fetchImage` и mapper. `-k/-p` логинят этого пользователя
+  (оба или ни одного).
+- Spark-задачи на защищённом кластере нельзя запускать от `hdfs` (LinuxContainerExecutor
+  YARN это запрещает). `-s/-t` передают spark-submit отдельные `--principal/--keytab`; они
+  обязательны при `-c hive` или `--master yarn` и могут быть опущены для локальных тестов.
+  Этому пользователю нужна запись в `<root>/{events,event_path,traffic_minute}` и чтение
+  `<root>/{raw,fsimage}`. Если metastore использует storage-based authorization, нужна ещё
+  запись (или ACL) на `<root>/fsimage`: `ResolvePaths` создаёт там таблицы `fs_*` и добавляет
+  партиции.
+- Keytab Spark (`-t`) должен читаться пользователем, от которого работает cron.
+- Для NameNode только с HTTPS передайте `-n https://<nn>:50470`.
+
+Cron, 02:00 UTC (после послеполуночного checkpoint). Запись в cron должна занимать одну
+физическую строку, поэтому её нельзя переносить. `CRON_TZ=UTC` стоит отдельной строкой над
+ней; без неё действует часовой пояс хоста, и 02:00 — это местное время хоста:
+
+```
+CRON_TZ=UTC
+0 2 * * * hdfs /opt/hdfs-traffic/daily-report.sh -n http://nn1.example:50070 -k /etc/security/keytabs/hdfs.headless.keytab -p hdfs-cluster@REALM -s spark-report@REALM -t /etc/security/keytabs/spark-report.keytab >>/var/log/hdfs-traffic-report.log 2>&1
+```
+
+Эксплуатация:
+
+- Сырой файл, пришедший после компактации своего дня (например, DataNode не работал в
+  полночь), в этот день не попадает: перезапустите день с `-D` (обе задачи идемпотентны
+  по партициям).
+- Потеря executor роняет запуск (задачи используют локальные checkpoint): запустите
+  заново.
+- `user` и `start` — зарезервированные слова Hive 3: в beeline берите их в обратные кавычки.
+- Смена `--root` позже требует `ALTER TABLE ... SET LOCATION` для существующих таблиц:
+  `ADD IF NOT EXISTS PARTITION` сохраняет старые пути.
+
 ## Docker-стенд
 
 `stand/` запускает агент на настоящем защищённом кластере: MIT KDC, NameNode, три

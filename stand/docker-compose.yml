@@ -55,6 +55,11 @@ services:
     hostname: tr-nn
     environment:
       ROLE: namenode
+    volumes:
+      - keytabs:/keytabs:ro
+      - ./dist/spark/spark-3.5.1-bin-hadoop3:/opt/spark:ro
+      - ../block-mapper/target:/opt/block-mapper:ro
+      - ../spark-jobs/target:/opt/spark-jobs:ro
     ports:
       - "29870:9870"
     healthcheck:

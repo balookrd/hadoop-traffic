@@ -208,6 +208,241 @@ Without systemd, cron works too (add `-j` so that nodes do not start together):
 
 The upload's own writes into HDFS appear as the service user's traffic.
 
+## Block-to-file mapping (block-mapper)
+
+Events carry block ids only. `block-mapper/` turns a downloaded fsimage into the inode
+model (block → inode, inode → parent and name) that the Spark jobs use to resolve an event's
+`file_block_id` to the file's current path (the resolution is done by the Spark jobs, see
+Reports).
+
+Build, once per Hadoop line:
+
+```bash
+mvn clean verify -P hadoop-3.1.1      # HDP
+mvn clean verify -P hadoop-3.3.6      # Apache Hadoop 3.3.x
+```
+
+The jar is `block-mapper/target/block-mapper-<version>-hadoop-<hadoop version>.jar`. Use the
+jar built for the cluster's Hadoop line: the generated protobuf classes differ between 3.1
+and 3.3. The jar bundles `orc-core` 1.5.13, `orc-shims`, `hive-storage-api`, `aircompressor`,
+`commons-lang` 2.6 and `threeten-extra`, all relocated under
+`org.hadooptraffic.mapper.shaded` (so Hive jars on `HADOOP_CLASSPATH` cannot shadow them);
+`protobuf-java` 2.5.0 comes from Hadoop. Hadoop 3.4+ (where protobuf 2.5 is optional) is not
+supported.
+
+Run it on a downloaded image, never on the NameNode's own storage. `-i` is a local file (the
+downloaded image), `-o` is any Hadoop FS URI:
+
+```bash
+hdfs dfsadmin -fetchImage /data/fsimg      # as an HDFS cluster administrator
+hadoop jar block-mapper-0.1.0-SNAPSHOT-hadoop-3.1.1.jar org.hadooptraffic.mapper.FsImageMapper \
+  -i /data/fsimg/fsimage_<txid> -o hdfs:///data/hdfs-traffic/fsimage/dt=<YYYY-MM-DD> [--format tsv]
+```
+
+`fetchImage` returns the last NameNode checkpoint, not the live namespace: files created
+or renamed after it are not in the image (see Reports for how the daily script waits for a
+fresh checkpoint). Never call `saveNamespace` on a production NameNode to get a newer one.
+
+Output: one file per table, `<out>/<table>/part-00000.orc`:
+
+| Table | Columns |
+|---|---|
+| `inode` | `inode_id`, `type` (`F` file, `D` directory, `S` symlink), `name` |
+| `edge` | `child_id`, `parent_id` |
+| `block_inode` | `block_id`, `inode_id` |
+| `meta` | `txid`, `image_file`, `parsed_at` (epoch milliseconds) |
+
+ORC is the default: file version 0.12, ZLIB, bloom filters on `inode_id`, `child_id` and
+`block_id`; readable by Hive 3.1 and Spark 3.5. `--format tsv` writes `part-00000.tsv` with
+the same columns, tab-separated; `\`, tab, newline and carriage return in names are escaped
+as `\\`, `\t`, `\n`, `\r`.
+
+The mapper writes to the hidden sibling `<parent>/.<name>._tmp` (for example
+`fsimage/.dt=2026-11-06._tmp`, which Spark and Hive do not take for a partition) and renames
+it to `<out>` on success; an existing `<out>` is never overwritten. Exit code 0 is success,
+1 a failure, 2 a usage error; messages are prefixed `block-mapper:`. Memory: the namespace
+is streamed; snapshot references and the ORC write buffers (bounded by ORC's memory manager)
+are held in memory.
+
+Limitations:
+
+- Inodes visible only in snapshots (deleted after a snapshot) have no parent and stay
+  unresolved.
+- A compressed image saved in parallel (`dfs.image.parallel.save=true` together with
+  `dfs.image.compress=true`, Hadoop 3.3) is rejected: fetch an image saved without one of the
+  two.
+
+## Reports (spark-jobs)
+
+`spark-jobs/` holds two Spark jobs that turn shipped events and the block-mapper output
+into per-minute traffic by user and table. Build (Spark 3.5.1, Scala 2.12; Spark 2 is not
+supported):
+
+```bash
+mvn clean verify
+```
+
+The jar is `spark-jobs/target/spark-jobs-<version>.jar`, the same for both Hadoop lines. On
+HDP 3.1 run it with a separate `spark-3.5.1-bin-hadoop3` distribution, not the cluster's
+Spark 2.
+
+Both jobs take `--dt YYYY-MM-DD` (required), `--root <dir URI>` (default
+`/data/hdfs-traffic`), `--db <name>` (default `hdfs_traffic`) and `--catalog hive|none`
+(default `hive`); `ResolvePaths` also takes `--image-dt YYYY-MM-DD`.
+
+- `CompactEvents` reads `<root>/raw/dt=D/dn=*/*.jsonl` and writes `<root>/events/dt=D`.
+  Malformed lines are counted and skipped; `*._COPYING_` files of an in-flight `put` are
+  not read. A missing raw partition fails the job.
+- `ResolvePaths` joins the events of `D` to the fsimage model and writes
+  `<root>/event_path/dt=D` (events plus `inode_id`, `table_dir`; `path` is filled in) and
+  `<root>/traffic_minute/dt=D`. The image is `--image-dt`, by default the latest
+  `fsimage/dt=YYYY-MM-DD` whose `meta/` contains an `.orc` file (hidden temp directories
+  are ignored). A file created on `D` appears only in a checkpoint taken after `D` ends,
+  so the daily script passes the image of today (`--image-dt <today>`), fetched after a
+  post-midnight checkpoint. Paths are current paths as of that checkpoint, with renames
+  already applied. WebHDFS events keep the `path` from the event; blocks that are not in
+  the image get `?`. When the selected image date is not after `D`, the job logs a WARN:
+  files created on `D` may resolve to `?`.
+
+Each run overwrites only its own partitions, so a failed run is simply repeated.
+
+| Table | Columns (all partitioned by `dt`) |
+|---|---|
+| `events` | the event fields of the JSONL (`ts`, `start`, `dn`, `op_id`, `user`, `op`, `role`, `locality`, `bpid`, `block_id`, `file_block_id`, `bytes`, `est_bytes`, `dur_ms`, `last`, `peer`, `path`) |
+| `fs_inode`, `fs_edge`, `fs_block_inode`, `fs_meta` | the block-mapper tables; `dt` is the image date |
+| `event_path` | the `events` columns plus `inode_id`, `table_dir` |
+| `traffic_minute` | `minute` (epoch ms of the UTC minute start), `user`, `op`, `role`, `locality`, `table_dir`, `bytes`, `est_bytes`, `ops` (number of `last` events) |
+
+All tables are EXTERNAL ORC with ZLIB (`hive/schema.sql`, generated from
+`org.hadooptraffic.spark.Ddl`; the jobs create them with `CREATE ... IF NOT EXISTS`).
+Partitions are added explicitly by the jobs with `ALTER TABLE ... ADD IF NOT EXISTS
+PARTITION`; never run `MSCK REPAIR TABLE`: the four `fs_*` tables share one directory per
+image with different schemas. The jobs read the JSONL and ORC files directly, so there is
+no Hive table over the raw files.
+
+With `--catalog none` the jobs only write files and register nothing.
+
+### Spark 3.5.1 on HDP 3.1 (YARN, Kerberos, Hive metastore 3.1)
+
+Put this in `$SPARK_HOME/conf/spark-defaults.conf` (not on a one-off command line):
+
+```
+spark.sql.hive.metastore.version   3.1.3
+spark.sql.hive.metastore.jars      path
+spark.sql.hive.metastore.jars.path file:///usr/hdp/current/hive-client/lib/*
+spark.hadoop.metastore.catalog.default hive
+spark.yarn.populateHadoopClasspath false
+```
+
+Also:
+
+- Copy `hive-site.xml` from `/etc/hive/conf` into `$SPARK_HOME/conf`. Do not take it from
+  `/etc/spark2/conf`: its `metastore.catalog.default=spark` hides the tables from Hive.
+- In `$SPARK_HOME/conf/spark-env.sh` put
+  `export HADOOP_CONF_DIR=/etc/hadoop/conf YARN_CONF_DIR=/etc/hadoop/conf` (cron has no
+  environment).
+- Optionally set `spark.yarn.archive` to a pre-uploaded archive of the Spark jars, so they
+  are not shipped on every run.
+
+The YARN / Kerberos / metastore path is not exercised by the stand (it runs Spark with
+`--master local` and `--catalog none`). On the first deploy check:
+
+1. One run with `--catalog hive` for a recent day succeeds.
+2. `SHOW PARTITIONS hdfs_traffic.traffic_minute;` in beeline lists the day.
+3. `SELECT * FROM hdfs_traffic.traffic_minute LIMIT 10;` in beeline returns rows (Hive
+   reading ORC written by Spark).
+4. `ADD PARTITION` on the `fs_*` tables works for the Spark principal (`SHOW PARTITIONS` on a
+   `fs_*` table lists the new `dt` after the run).
+5. Possible fix: if the Spark client fails on the YARN timeline service, add
+   `spark.hadoop.yarn.timeline-service.enabled false` to `spark-defaults.conf`.
+
+`table_dir` is derived from the path without the Hive metastore: drop the file name, then
+cut at the first partition component (`key=value`), service component (starts with `.` or
+`_`: `.hive-staging_*`, `_temporary`) or Hive ACID component (`base_N`, `delta_N_N`,
+`delete_delta_N_N`, each with an optional `_v<n>` suffix). Staging files that were moved
+into the table are attributed to the table; files deleted before the next NameNode
+checkpoint (Hive scratch directories, job staging jars, temporary outputs) are not in the
+image and give `?`. An unpartitioned table with
+subdirectories folds one level lower (to the subdirectory).
+
+Limitations:
+
+- Events are joined to the image by block id only: federated clusters (several block
+  pools) are not supported.
+- A path chain deeper than 256 levels, or a cyclic one (corrupt image), resolves to `?`
+  with a warning in the job log.
+- Inodes visible only in snapshots stay `?` (see the block-mapper limitations).
+- Tests and the stand bind the Spark driver to `127.0.0.1`, so they do not depend on host
+  name resolution.
+
+Example: top tables by write rate for one hour, MB/s per minute:
+
+```sql
+SELECT table_dir, SUM(bytes) / 1048576 / 60 AS mb_per_s, minute
+FROM hdfs_traffic.traffic_minute
+WHERE dt = '2026-11-06'
+  AND op IN ('write', 'webhdfs_create', 'webhdfs_append') AND role = 'client'
+  AND minute >= 1793923200000 AND minute < 1793926800000   -- 2026-11-06 00:00-01:00 UTC
+GROUP BY minute, table_dir
+ORDER BY mb_per_s DESC
+LIMIT 20;
+```
+
+### Daily run
+
+`deploy/daily-report.sh -n <active NameNode http URL> [-D YYYY-MM-DD] [-r root] [-w workdir]
+[-m mapper.jar] [-j spark-jobs.jar] [-c hive|none] [-k keytab -p principal] [-s spark principal
+-t spark keytab]` needs GNU `date`, `flock`, `python3` and `curl --negotiate`.
+
+`hdfs dfsadmin -fetchImage` returns the last NameNode checkpoint, not the live namespace, and
+the script never calls `saveNamespace`. Unless `<root>/fsimage/dt=<today>` already exists, it
+first polls the active NameNode's JMX (`LastCheckpointTime`) every `POLL_SEC` (default 300)
+for up to `MAX_WAIT_SEC` (default 10800) until a checkpoint after 00:00 UTC of today exists,
+and fails with a clear message otherwise. This needs working checkpointing: the standby
+NameNode (HA) or the SecondaryNameNode, with `dfs.namenode.checkpoint.period` at most 1 hour.
+For HA pass the active NameNode (`hdfs haadmin -getAllServiceState`), for example
+`http://nn1.example:50070` on HDP. Then it fetches the image, runs the mapper into
+`fsimage/dt=<today>`, and runs `CompactEvents` and `ResolvePaths` for the previous UTC day with
+`--image-dt <today>`. To replace a stale `fsimage/dt=<today>`, delete it first. `-D` reruns
+a given day against the latest image (no `--image-dt`). A second run while one is active
+exits with a message (`flock` on `<workdir>/.lock`); the downloaded image is removed on exit.
+`SPARK_ARGS` (default `--master yarn --deploy-mode client`) and `SPARK_HOME` come from the
+environment.
+
+Users and permissions:
+
+- The script runs as an HDFS cluster administrator (a member of `dfs.cluster.administrators`,
+  for example `hdfs`): `fetchImage` and the mapper need it. `-k/-p` log that user in (both or
+  neither).
+- The Spark jobs must not run as `hdfs` on a secure cluster (YARN's LinuxContainerExecutor
+  bans it). `-s/-t` give spark-submit a separate `--principal/--keytab`; they are required
+  with `-c hive` or `--master yarn` and may be omitted for local tests. That user needs
+  write access to `<root>/{events,event_path,traffic_minute}` and read access to
+  `<root>/{raw,fsimage}`. When the Hive metastore uses storage-based authorization, it also
+  needs write access (or an ACL) on `<root>/fsimage`: `ResolvePaths` creates the `fs_*` tables
+  and adds partitions there.
+- The Spark keytab (`-t`) must be readable by the user running cron.
+- For an HTTPS-only NameNode pass `-n https://<nn>:50470`.
+
+Cron, 02:00 UTC (after a post-midnight checkpoint). Cron needs one physical line per entry, so
+the entry is not split. `CRON_TZ=UTC` goes on its own line above it; without it the host
+timezone applies and 02:00 is host-local time:
+
+```
+CRON_TZ=UTC
+0 2 * * * hdfs /opt/hdfs-traffic/daily-report.sh -n http://nn1.example:50070 -k /etc/security/keytabs/hdfs.headless.keytab -p hdfs-cluster@REALM -s spark-report@REALM -t /etc/security/keytabs/spark-report.keytab >>/var/log/hdfs-traffic-report.log 2>&1
+```
+
+Operations:
+
+- A raw file that arrives after its day was compacted (for example a DataNode that was down
+  at midnight) is not in that day: rerun the day with `-D` (both jobs are idempotent per
+  partition).
+- An executor loss fails the run (the jobs use local checkpoints): rerun it.
+- `user` and `start` are reserved words in Hive 3: backquote them in beeline.
+- Changing `--root` later needs `ALTER TABLE ... SET LOCATION` for existing tables:
+  `ADD IF NOT EXISTS PARTITION` keeps the old locations.
+
 ## Docker stand
 
 `stand/` runs the agent on a real secure cluster: MIT KDC, a NameNode, three DataNodes

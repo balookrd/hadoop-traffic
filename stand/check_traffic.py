@@ -6,6 +6,7 @@
                                             scenario's expectations, print the delta table
   check_traffic.py events SINCE UNTIL    -> read JSONL events from stdin (ts in [SINCE, UNTIL] ms),
                                             check them against the same expectations
+  check_traffic.py tables  -> read "user op role table_dir bytes" rows (TSV) from stdin
 """
 import json
 import re
@@ -129,6 +130,31 @@ def path_failures(paths):
     return bad
 
 
+MIB_ = 1024 * 1024
+# (user, op, role, table_dir) -> exact bytes of the warehouse step.
+TABLE_EXPECTED = {
+    ("alice", "write", "client", "/warehouse/db1/t1"): 1 * MIB_,        # staged, then moved
+    ("bob", "write", "client", "/warehouse/extra/db2/t2"): 2 * MIB_,    # one level deeper
+    ("carol", "write", "client", "/warehouse/db3/t3"): 1 * MIB_,        # still in staging
+}
+
+
+def table_failures(lines):
+    got = {}
+    for line in lines:
+        cols = line.rstrip("\n").split("\t")
+        if len(cols) != 5 or not cols[4].isdigit():
+            continue
+        got[tuple(cols[:4])] = got.get(tuple(cols[:4]), 0) + int(cols[4])
+    bad = []
+    for key, want in TABLE_EXPECTED.items():
+        if got.get(key, 0) != want:
+            bad.append("%s: bytes %d, expected %d" % (key, got.get(key, 0), want))
+    for key in sorted(got):
+        print("%-6s %-6s %-9s %-28s %12d" % (key + (got[key],)))
+    return bad
+
+
 def show(table):
     print("%-8s %-15s %-14s %-7s %12s %10s %5s"
           % ("user", "op", "role", "local", "Bytes", "EstBytes", "Ops"))
@@ -169,6 +195,13 @@ def main():
             return 1
         print("\nOK: events match all %d expectations" % (len(EXPECTED) + len(AT_LEAST)
                                                           + len(PATH_PREFIXES)))
+        return 0
+    if sys.argv[1:2] == ["tables"]:
+        bad = table_failures(sys.stdin)
+        if bad:
+            print("\nFAIL:\n  " + "\n  ".join(bad))
+            return 1
+        print("\nOK: event_path matches all %d table expectations" % len(TABLE_EXPECTED))
         return 0
     print(__doc__)
     return 2
