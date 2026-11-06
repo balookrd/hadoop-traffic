@@ -1,5 +1,5 @@
 # Ships closed hdfs-traffic-agent event files into HDFS (one run; started by the timer).
-# Install: see "Shipping" in README.md. Options go to /etc/default/hdfs-traffic-upload.
+# Install: see "Running the upload from a systemd timer" in README.en.md. Options go to /etc/default/hdfs-traffic-upload.
 [Unit]
 Description=Ship hdfs-traffic-agent event files into HDFS
 After=network-online.target
