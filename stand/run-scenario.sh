@@ -49,6 +49,8 @@ done
 as_hdfs 'hdfs dfsadmin -safemode wait >/dev/null && hdfs dfs -mkdir -p /traffic && hdfs dfs -chmod 1777 /traffic'
 
 python3 -I "${STAND_DIR}/check_traffic.py" snapshot > "${WORK}/baseline.json"
+now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+since_ms=$(now_ms)
 
 docker exec tr-client bash -c \
   'head -c 3145728 /dev/urandom > /tmp/3m && head -c 2097152 /dev/urandom > /tmp/2m && head -c 1048576 /dev/urandom > /tmp/1m'
@@ -83,3 +85,26 @@ fi
 
 step "UserTraffic delta, summed over the DataNodes"
 python3 -I "${STAND_DIR}/check_traffic.py" verify "${WORK}/baseline.json"
+
+until_ms=$(now_ms)
+
+# Events: every DataNode ships its closed files (rotation every 20 s) into HDFS; compare the
+# events of this run with the same expectations. Retry while files are still being rotated.
+step "events: shipped to HDFS, summed over the DataNodes"
+ok=""
+for attempt in 1 2 3 4 5; do
+  sleep 15
+  for dn in tr-dn1 tr-dn2 tr-dn3; do
+    docker exec "${dn}" runuser -u hdfs -- /opt/hdfs-traffic-deploy/upload-events.sh \
+      -d /var/log/hdfs-traffic -r /data/hdfs-traffic/raw \
+      -k /etc/security/keytabs/host.keytab -p "hdfs/${dn}.traffic-net@${REALM}" >/dev/null
+  done
+  if as_hdfs 'hdfs dfs -cat "/data/hdfs-traffic/raw/dt=*/dn=*/*.jsonl"' \
+      | python3 -I "${STAND_DIR}/check_traffic.py" events "${since_ms}" "${until_ms}" \
+      > "${WORK}/events.txt"; then
+    ok=1
+    break
+  fi
+done
+cat "${WORK}/events.txt"
+[[ -n "${ok}" ]] || { echo "FAIL: events in HDFS do not match the scenario" >&2; exit 1; }

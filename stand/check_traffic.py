@@ -4,6 +4,8 @@
   check_traffic.py snapshot              -> JSON of counters summed over all DataNodes
   check_traffic.py verify BASELINE.json  -> wait until the delta since BASELINE matches the
                                             scenario's expectations, print the delta table
+  check_traffic.py events SINCE UNTIL    -> read JSONL events from stdin (ts in [SINCE, UNTIL] ms),
+                                            check them against the same expectations
 """
 import json
 import re
@@ -90,6 +92,43 @@ def failures(table):
     return bad
 
 
+# WebHDFS events carry the path the DataNode was asked for; `hdfs dfs -put` writes to a
+# temporary name first, so the create path is checked by prefix.
+PATH_PREFIXES = {
+    ("bob", "webhdfs_create"): "/traffic/bob-web.bin",
+    ("bob", "webhdfs_read"): "/traffic/bob-web.bin",
+}
+
+
+def events_table(lines, since, until):
+    """JSONL events with since <= ts <= until -> same shape as delta(): key -> counters."""
+    table, paths = {}, {}
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        e = json.loads(line)
+        if not since <= e["ts"] <= until:
+            continue
+        row = table.setdefault((e["user"], e["op"], e["role"], e["locality"]), {})
+        row["Bytes"] = row.get("Bytes", 0) + e["bytes"]
+        row["EstimatedBytes"] = row.get("EstimatedBytes", 0) + e["est_bytes"]
+        if e["last"]:
+            row["Ops"] = row.get("Ops", 0) + 1
+        if e["path"] is not None:
+            paths.setdefault((e["user"], e["op"]), set()).add(e["path"])
+    return table, paths
+
+
+def path_failures(paths):
+    bad = []
+    for key, prefix in PATH_PREFIXES.items():
+        got = paths.get(key, set())
+        if not got or not all(p.startswith(prefix) for p in got):
+            bad.append("%s: paths %s, expected prefix %s" % (key, sorted(got), prefix))
+    return bad
+
+
 def show(table):
     print("%-8s %-15s %-14s %-7s %12s %10s %5s"
           % ("user", "op", "role", "local", "Bytes", "EstBytes", "Ops"))
@@ -120,6 +159,16 @@ def main():
             print("\nFAIL:\n  " + "\n  ".join(bad))
             return 1
         print("\nOK: all %d expectations met" % (len(EXPECTED) + len(AT_LEAST)))
+        return 0
+    if len(sys.argv) == 4 and sys.argv[1] == "events":
+        table, paths = events_table(sys.stdin, int(sys.argv[2]), int(sys.argv[3]))
+        show(table)
+        bad = failures(table) + path_failures(paths)
+        if bad:
+            print("\nFAIL:\n  " + "\n  ".join(bad))
+            return 1
+        print("\nOK: events match all %d expectations" % (len(EXPECTED) + len(AT_LEAST)
+                                                          + len(PATH_PREFIXES)))
         return 0
     print(__doc__)
     return 2

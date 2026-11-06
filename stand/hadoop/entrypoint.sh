@@ -110,6 +110,7 @@ export HADOOP_HEAPSIZE_MAX=512m
 ENV
 
 if [[ "${ROLE}" == "datanode" && -n "${AGENT_JAR:-}" ]]; then
+  install -d -o hdfs -g hadoop /var/log/hdfs-traffic
   if [[ -f "${AGENT_JAR}" ]]; then
     echo "export HDFS_DATANODE_OPTS=\"-javaagent:${AGENT_JAR}=${AGENT_ARGS:-maxUsers=2000} \${HDFS_DATANODE_OPTS:-}\"" \
       >> "${CONF}/hadoop-env.sh"

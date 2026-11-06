@@ -25,10 +25,11 @@ x-datanode: &datanode
   environment:
     ROLE: datanode
     AGENT_JAR: /opt/agent/hdfs-traffic-agent.jar
-    AGENT_ARGS: ${AGENT_ARGS:-maxUsers=2000}
+    AGENT_ARGS: ${AGENT_ARGS:-maxUsers=2000,events=/var/log/hdfs-traffic/events.jsonl,eventsRotateSec=20,flushIntervalSec=5}
   volumes:
     - keytabs:/keytabs:ro
-    - ${AGENT_JAR_HOST:-../target/hdfs-traffic-agent-0.1.0-SNAPSHOT.jar}:/opt/agent/hdfs-traffic-agent.jar:ro
+    - ${AGENT_JAR_HOST:-../agent/target/hdfs-traffic-agent-0.1.0-SNAPSHOT.jar}:/opt/agent/hdfs-traffic-agent.jar:ro
+    - ../deploy:/opt/hdfs-traffic-deploy:ro
   depends_on:
     tr-nn:
       condition: service_healthy

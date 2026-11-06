@@ -41,5 +41,5 @@ else
   echo "[prepare] staged $(du -sh "${DEST}" | cut -f1) into ${DEST}"
 fi
 
-jar="${STAND_DIR}/../target/hdfs-traffic-agent-0.1.0-SNAPSHOT.jar"
+jar="${STAND_DIR}/../agent/target/hdfs-traffic-agent-0.1.0-SNAPSHOT.jar"
 [[ -f "${jar}" ]] || echo "[prepare] WARNING: ${jar} is missing, build it with mvn package (JDK 8)" >&2
