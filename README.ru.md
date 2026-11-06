@@ -149,18 +149,64 @@ DataNode никогда не блокируется на приёмнике: п�
 `EventFilesDropped` (счётчики) и `EventsQueueSize` (gauge).
 
 Отправка: `deploy/upload-events.sh -d <каталог событий> -r <корень в HDFS> [-n <префикс файлов>]
-[-k <keytab> -p <principal>] [-H <host>]` кладёт закрытые файлы в HDFS по пути
-`<root>/dt=YYYY-MM-DD/dn=<host>/<файл>` и удаляет локальный файл только после успешного
-put. Скрипт берёт `flock`, поэтому запуски не накладываются, и использует собственный
-кэш Kerberos-билетов в каталоге событий. Партиция `dn=` — ключ узла: по умолчанию
-`hostname -f`, `-H` переопределяет его; он может отличаться от поля `dn` внутри событий.
-Сбой одного файла не останавливает запуск: остальные всё равно отправляются, код выхода — 1.
+[-k <keytab> -p <principal>] [-H <host>] [-b <файлов на put>] [-j <макс. задержка, с>]` кладёт
+закрытые файлы в HDFS по пути `<root>/dt=YYYY-MM-DD/dn=<host>/<файл>` и удаляет локальные
+файлы только после успешного put. Файлы уходят пачками: один `hdfs dfs -mkdir` на все
+целевые каталоги и один `hdfs dfs -put` на каждый целевой каталог и пачку из `-b` файлов
+(по умолчанию 100). Поэтому за запуск стартуют две-три JVM, а не по одной на файл; если
+закрытых файлов нет, скрипт ничего не делает (ни `kinit`, ни JVM). Скрипт берёт `flock`,
+поэтому запуски не накладываются, и использует собственный кэш Kerberos-билетов в каталоге
+событий. Партиция `dn=` — ключ узла: по умолчанию `hostname -f`, `-H` переопределяет его;
+он может отличаться от поля `dn` внутри событий. Сбой одной пачки не останавливает запуск:
+остальные пачки всё равно отправляются, файлы из неудачной остаются до следующего запуска
+(повторный put с `-f` безопасен: закрытые файлы не меняются), код выхода — 1. `-j <с>`
+перед стартом ждёт случайное время от 0 до заданного числа секунд.
 
-Скопируйте `deploy/upload-events.sh` на DataNode (например, рядом с jar агента,
-`/opt/hdfs-traffic-agent/`) и запускайте из cron, например:
+### Запуск через systemd timer
+
+В `deploy/systemd/` лежат oneshot-сервис и таймер, который запускает его каждые 5 минут со
+случайной задержкой до 4 минут (`RandomizedDelaySec=240`): DataNode кластера не обращаются к
+NameNode и KDC в одну и ту же секунду. Пока предыдущий запуск не закончился, таймер новый не
+стартует. Сервис работает от `hdfs` с пониженным приоритетом CPU и ввода-вывода, heap
+клиента 256 МБ и таймаутом 30 минут.
+
+На каждой DataNode, от root:
+
+```bash
+install -d /opt/hdfs-traffic-agent
+install -m 0755 deploy/upload-events.sh /opt/hdfs-traffic-agent/
+install -m 0644 deploy/systemd/hdfs-traffic-upload.service \
+    deploy/systemd/hdfs-traffic-upload.timer /etc/systemd/system/
+install -m 0644 deploy/systemd/hdfs-traffic-upload.env /etc/default/hdfs-traffic-upload
+# поправьте /etc/default/hdfs-traffic-upload: каталог событий, корень в HDFS, keytab и principal
+systemctl daemon-reload
+systemctl enable --now hdfs-traffic-upload.timer
+```
+
+Опции скрипта задаются в `UPLOAD_ARGS` в `/etc/default/hdfs-traffic-upload`; там же можно
+задать `JAVA_HOME` и `HADOOP_CLIENT_OPTS`. Unit ищет `hdfs` в
+`/usr/hdp/current/hadoop-client/bin`, `/opt/hadoop/bin` и системном `PATH`; если он лежит в
+другом месте, переопределите `PATH` через `systemctl edit hdfs-traffic-upload.service`.
+
+`RandomizedDelaySec` работает начиная с systemd 229. Более старый systemd (в RHEL/CentOS 7 —
+219) пропускает его с предупреждением в журнале, и все ноды стартуют одновременно: там
+добавьте `-j 240` в `UPLOAD_ARGS`.
+
+Проверка:
+
+```bash
+systemctl list-timers hdfs-traffic-upload.timer   # следующий запуск
+systemctl start hdfs-traffic-upload.service       # запустить сейчас
+journalctl -u hdfs-traffic-upload.service         # что отправлено, ошибки
+```
+
+После неудачного запуска сервис остаётся в состоянии `failed` до следующего успешного,
+поэтому его можно мониторить как любой другой unit.
+
+Без systemd подойдёт и cron (добавьте `-j`, чтобы ноды не стартовали одновременно):
 
 ```
-*/5 * * * * hdfs /opt/hdfs-traffic-agent/upload-events.sh -d /var/log/hadoop/hdfs-traffic \
+*/5 * * * * hdfs /opt/hdfs-traffic-agent/upload-events.sh -j 240 -d /var/log/hadoop/hdfs-traffic \
     -r /data/hdfs-traffic/raw -k /etc/security/keytabs/hdfs.headless.keytab -p hdfs@REALM
 ```
 

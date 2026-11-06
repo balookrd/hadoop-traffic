@@ -1,0 +1,16 @@
+# Runs hdfs-traffic-upload.service every 5 minutes with a random delay of up to 4 minutes,
+# so the DataNodes of a cluster do not hit the NameNode and the KDC in the same second.
+# A run still in progress is not started twice (and the script also takes a flock).
+# RandomizedDelaySec needs systemd >= 229; on older systemd (RHEL/CentOS 7) it is ignored
+# with a warning: pass -j 240 to the script in /etc/default/hdfs-traffic-upload instead.
+[Unit]
+Description=Ship hdfs-traffic-agent event files into HDFS every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+RandomizedDelaySec=240
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

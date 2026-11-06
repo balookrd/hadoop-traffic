@@ -146,18 +146,63 @@ are dropped and counted, with a WARN at most once a minute. Health attributes on
 `EventsQueueSize` (gauge).
 
 Shipping: `deploy/upload-events.sh -d <events dir> -r <HDFS root> [-n <file prefix>]
-[-k <keytab> -p <principal>] [-H <host>]` puts closed files into HDFS as
-`<root>/dt=YYYY-MM-DD/dn=<host>/<file>` and deletes the local file only after a successful
-put. It takes a `flock`, so runs never overlap, and uses its own Kerberos credential cache
-in the events directory. The partition `dn=` is the node key: `hostname -f` by default,
-`-H` overrides it; it may differ from the `dn` field inside the events. One failing file
-does not stop the run: the others are still shipped and the exit code is 1.
+[-k <keytab> -p <principal>] [-H <host>] [-b <files per put>] [-j <max jitter sec>]` puts
+closed files into HDFS as `<root>/dt=YYYY-MM-DD/dn=<host>/<file>` and deletes the local files
+only after a successful put. Files go in batches: one `hdfs dfs -mkdir` for all target
+directories and one `hdfs dfs -put` per target directory and batch of `-b` files (default
+100), so a run starts two or three JVMs instead of one per file; with no closed files it
+does nothing (no `kinit`, no JVM). It takes a `flock`, so runs never overlap, and uses its
+own Kerberos credential cache in the events directory. The partition `dn=` is the node key:
+`hostname -f` by default, `-H` overrides it; it may differ from the `dn` field inside the
+events. A failing batch does not stop the run: the other batches are still shipped, the
+failed files stay for the next run (a re-put with `-f` is safe: closed files are immutable)
+and the exit code is 1. `-j <sec>` sleeps a random 0..sec seconds before starting.
 
-Copy `deploy/upload-events.sh` to the DataNode (e.g. next to the agent jar,
-`/opt/hdfs-traffic-agent/`) and run it from cron, for example:
+### Running it with a systemd timer
+
+`deploy/systemd/` holds a oneshot service and a timer that starts it every 5 minutes with a
+random delay of up to 4 minutes (`RandomizedDelaySec=240`), so the DataNodes of a cluster do
+not hit the NameNode and the KDC in the same second. The timer never starts a second run
+while one is still going. The service runs as `hdfs` with lowered CPU and I/O priority, a
+256 MB client heap and a 30-minute timeout.
+
+On every DataNode, as root:
+
+```bash
+install -d /opt/hdfs-traffic-agent
+install -m 0755 deploy/upload-events.sh /opt/hdfs-traffic-agent/
+install -m 0644 deploy/systemd/hdfs-traffic-upload.service \
+    deploy/systemd/hdfs-traffic-upload.timer /etc/systemd/system/
+install -m 0644 deploy/systemd/hdfs-traffic-upload.env /etc/default/hdfs-traffic-upload
+# edit /etc/default/hdfs-traffic-upload: events dir, HDFS root, keytab and principal
+systemctl daemon-reload
+systemctl enable --now hdfs-traffic-upload.timer
+```
+
+Options of the script go to `UPLOAD_ARGS` in `/etc/default/hdfs-traffic-upload`; `JAVA_HOME`
+and `HADOOP_CLIENT_OPTS` can be set there too. The unit looks for `hdfs` in
+`/usr/hdp/current/hadoop-client/bin`, `/opt/hadoop/bin` and the system `PATH`; for another
+location override `PATH` with `systemctl edit hdfs-traffic-upload.service`.
+
+`RandomizedDelaySec` needs systemd 229 or newer. Older systemd (RHEL/CentOS 7 has 219)
+ignores it with a warning in the journal, and all nodes would start together: add `-j 240`
+to `UPLOAD_ARGS` there.
+
+Checking:
+
+```bash
+systemctl list-timers hdfs-traffic-upload.timer   # next run
+systemctl start hdfs-traffic-upload.service       # run now
+journalctl -u hdfs-traffic-upload.service         # what was shipped, failures
+```
+
+A failed run leaves the service in the `failed` state until the next successful one, so it
+can be monitored like any other unit.
+
+Without systemd, cron works too (add `-j` so that nodes do not start together):
 
 ```
-*/5 * * * * hdfs /opt/hdfs-traffic-agent/upload-events.sh -d /var/log/hadoop/hdfs-traffic \
+*/5 * * * * hdfs /opt/hdfs-traffic-agent/upload-events.sh -j 240 -d /var/log/hadoop/hdfs-traffic \
     -r /data/hdfs-traffic/raw -k /etc/security/keytabs/hdfs.headless.keytab -p hdfs@REALM
 ```
 

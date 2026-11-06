@@ -1,0 +1,21 @@
+# Ships closed hdfs-traffic-agent event files into HDFS (one run; started by the timer).
+# Install: see "Shipping" in README.md. Options go to /etc/default/hdfs-traffic-upload.
+[Unit]
+Description=Ship hdfs-traffic-agent event files into HDFS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hdfs
+# hdfs must be on PATH; JAVA_HOME and HADOOP_CLIENT_OPTS may be set in the environment file.
+Environment=PATH=/usr/hdp/current/hadoop-client/bin:/opt/hadoop/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HADOOP_CLIENT_OPTS=-Xmx256m
+EnvironmentFile=-/etc/default/hdfs-traffic-upload
+ExecStart=/opt/hdfs-traffic-agent/upload-events.sh $UPLOAD_ARGS
+# Background work: never compete with the DataNode for CPU or disk.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# A hung put (NameNode down, safe mode) must not block later runs forever.
+TimeoutStartSec=30min
