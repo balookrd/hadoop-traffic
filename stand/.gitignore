@@ -1,0 +1,2 @@
+# Staged Hadoop distributions (prepare.sh); HDP jars are not redistributable.
+dist/

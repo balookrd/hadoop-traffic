@@ -1,0 +1,101 @@
+# Secure HDFS stand for hdfs-traffic-agent: KDC, one NameNode, three DataNodes with the agent
+# attached through -javaagent, and a client container.
+#
+#   ./prepare.sh hdp                                    # or: apache
+#   docker compose --env-file .env.hdp up -d --build    # or: .env.apache
+#   ./run-scenario.sh hdp
+#
+# Host ports: 29870 NameNode web UI (SPNEGO), 29864/29865/29866 DataNode web UI and /jmx.
+name: hdfs-traffic-stand
+
+x-hadoop: &hadoop
+  build:
+    context: ./hadoop
+    additional_contexts:
+      dist: ./dist/${HADOOP_FLAVOR:?set HADOOP_FLAVOR or pass --env-file .env.hdp}
+  image: hdfs-traffic-stand/hadoop:${HADOOP_FLAVOR}
+  depends_on:
+    kdc:
+      condition: service_healthy
+  volumes:
+    - keytabs:/keytabs:ro
+
+x-datanode: &datanode
+  <<: *hadoop
+  environment:
+    ROLE: datanode
+    AGENT_JAR: /opt/agent/hdfs-traffic-agent.jar
+    AGENT_ARGS: ${AGENT_ARGS:-maxUsers=2000}
+  volumes:
+    - keytabs:/keytabs:ro
+    - ${AGENT_JAR_HOST:-../target/hdfs-traffic-agent-0.1.0-SNAPSHOT.jar}:/opt/agent/hdfs-traffic-agent.jar:ro
+  depends_on:
+    tr-nn:
+      condition: service_healthy
+
+services:
+  kdc:
+    build:
+      context: ./kdc
+    image: hdfs-traffic-stand/kdc:latest
+    container_name: tr-kdc
+    hostname: tr-kdc
+    volumes:
+      - keytabs:/keytabs
+    healthcheck:
+      test: ["CMD", "test", "-f", "/keytabs/.ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  tr-nn:
+    <<: *hadoop
+    container_name: tr-nn
+    hostname: tr-nn
+    environment:
+      ROLE: namenode
+    ports:
+      - "29870:9870"
+    healthcheck:
+      # The NameNode web endpoints require SPNEGO: probe the RPC port instead.
+      test: ["CMD-SHELL", "nc -z \"$$(hostname)\" 8020"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 15s
+
+  tr-dn1:
+    <<: *datanode
+    container_name: tr-dn1
+    hostname: tr-dn1
+    ports:
+      - "29864:9864"
+
+  tr-dn2:
+    <<: *datanode
+    container_name: tr-dn2
+    hostname: tr-dn2
+    ports:
+      - "29865:9864"
+
+  tr-dn3:
+    <<: *datanode
+    container_name: tr-dn3
+    hostname: tr-dn3
+    ports:
+      - "29866:9864"
+
+  tr-client:
+    <<: *hadoop
+    container_name: tr-client
+    hostname: tr-client
+    environment:
+      ROLE: client
+
+networks:
+  default:
+    # No underscore: the network name ends up in reverse-DNS host names.
+    name: traffic-net
+
+volumes:
+  keytabs:
