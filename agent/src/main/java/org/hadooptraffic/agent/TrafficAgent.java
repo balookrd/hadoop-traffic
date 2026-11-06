@@ -38,7 +38,9 @@ public final class TrafficAgent {
       // Instrument first: if this fails nothing else has been started or registered.
       Instrumentations.builder().installOn(inst);
       OpContext.setFlushIntervalSec(config.flushIntervalSec());
-      TrafficAggregator agg = new TrafficAggregator(config.maxUsers());
+      // Off by default: per-user counters reach ~60k JMX attributes per DataNode.
+      TrafficAggregator agg =
+          config.userMetrics() ? new TrafficAggregator(config.maxUsers()) : null;
       JsonlEventSink sink = null;
       if (config.eventsPath() != null) {
         sink = new JsonlEventSink(Paths.get(config.eventsPath()), config.eventsQueue(),
@@ -49,14 +51,21 @@ public final class TrafficAgent {
             new Thread(() -> toClose.close(2000), "hdfs-traffic-events-shutdown"));
         sink.start();
       }
-      TrafficSinks.register(agg);
+      if (agg != null) {
+        TrafficSinks.register(agg);
+      }
       if (sink != null) {
         TrafficSinks.register(sink);
       }
       MetricsRegistrar.init(agg, sink);
       aggregator = agg;
       eventSink = sink;
-      AgentLog.info("hdfs-traffic-agent installed (maxUsers=" + config.maxUsers()
+      if (agg == null && sink == null) {
+        AgentLog.warn("hdfs-traffic-agent: userMetrics=false and no events path: "
+            + "traffic is not recorded anywhere", null);
+      }
+      AgentLog.info("hdfs-traffic-agent installed (userMetrics=" + config.userMetrics()
+          + (agg == null ? "" : ", maxUsers=" + config.maxUsers())
           + ", events=" + (sink == null ? "off" : config.eventsPath())
           + ", flushIntervalSec=" + config.flushIntervalSec() + ")");
     } catch (Throwable t) {
@@ -72,7 +81,7 @@ public final class TrafficAgent {
     }
   }
 
-  /** The aggregator, or null if the agent is not installed. */
+  /** The aggregator, or null if the agent is not installed or userMetrics is off. */
   public static TrafficAggregator aggregator() {
     return aggregator;
   }

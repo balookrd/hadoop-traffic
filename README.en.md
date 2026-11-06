@@ -91,8 +91,11 @@ On every DataNode:
    **HDFS → Configs → Advanced hadoop-env → hadoop-env template**.
 
    ```bash
-   export HDFS_DATANODE_OPTS="$HDFS_DATANODE_OPTS -javaagent:/opt/hdfs-traffic-agent/hdfs-traffic-agent.jar=maxUsers=2000"
+   export HDFS_DATANODE_OPTS="$HDFS_DATANODE_OPTS -javaagent:/opt/hdfs-traffic-agent/hdfs-traffic-agent.jar=events=/var/log/hadoop/hdfs-traffic/events.jsonl"
    ```
+
+   Without options the agent records nothing: `events` turns on the events, and
+   `userMetrics=true` the per-user JMX counters (see [Agent options](#agent-options)).
 
    Hadoop 3 also reads the deprecated name `HADOOP_DATANODE_OPTS`.
 3. Restart the DataNode.
@@ -109,17 +112,29 @@ option disables the agent with a WARN in the DataNode log; the DataNode starts a
 
 | Option | Default | What it does | When to change |
 |---|---|---|---|
-| `maxUsers` | 2000 | users that get their own JMX series, first come first served; the rest go to `__other__` | lower it when the metrics sink cannot take ~60k attributes per DataNode (see [Metrics](#metrics)) |
+| `userMetrics` | `false` | `true` publishes per-user counters in JMX (see [Metrics](#metrics)) | turn it on when the per-user series are needed in the metrics system and it can take up to ~60k attributes per DataNode |
+| `maxUsers` | 2000 | only with `userMetrics=true`: users that get their own JMX series, first come first served; the rest go to `__other__` | lower it when the metrics sink cannot take ~60k attributes per DataNode |
 | `events` | off | path of the active JSONL events file, for example `/var/log/hadoop/hdfs-traffic/events.jsonl`; no commas | set it to enable the events |
 | `eventsQueue` | 65536 | events buffered for the writer thread; overflow is dropped and counted in `EventsDropped` | raise it when `EventsDropped` grows |
 | `eventsMaxFileMb` | 256 | size at which the active file is rotated, MB | |
 | `eventsRotateSec` | 300 | age at which the active file is rotated, seconds | |
-| `eventsMaxFiles` | 100 | closed files kept while not shipped; beyond it the oldest are deleted and counted in `EventFilesDropped` | raise it if shipping can stop for longer than 100 × `eventsRotateSec` |
+| `eventsMaxFiles` | 100 | closed files kept while not shipped; beyond it the oldest are deleted and counted in `EventFilesDropped` | raise it if shipping can stop for longer than the buffer lasts (see [Local buffer on a DataNode](#local-buffer-on-a-datanode)) |
 | `flushIntervalSec` | 10 | long operations report their bytes every N seconds (JMX and events); 0 reports them at the end only | |
 
 ## Metrics
 
-JMX bean `Hadoop:service=DataNode,name=UserTraffic`. Attribute names have the form
+JMX bean `Hadoop:service=DataNode,name=UserTraffic`. Its content depends on the options:
+
+| Options | Bean content |
+|---|---|
+| `userMetrics=true` | per-user counters (below) and, when `events` is set, the writer thread counters (see [Event files](#event-files)) |
+| `userMetrics=false` (default), `events` set | the writer thread counters only: `EventsWritten`, `EventsDropped`, `EventFilesDropped`, `EventsQueueSize` |
+| `userMetrics=false`, no `events` | the bean is not registered; the agent logs a WARN that traffic is recorded nowhere |
+
+With `userMetrics=false` the agent keeps no per-user counters in memory; per-user traffic is
+in the events only.
+
+Per-user counters: attribute names have the form
 `<Counter>.user.<u>.op.<op>.role.<role>.locality.<loc>` (as in nntop), for example
 `Bytes.user.alice.op.read.role.client.locality.remote`. Over HTTP:
 
@@ -296,6 +311,142 @@ line:
 ```
 */5 * * * * hdfs /opt/hdfs-traffic-agent/upload-events.sh -j 240 -d /var/log/hadoop/hdfs-traffic -r /data/hdfs-traffic/raw -k /etc/security/keytabs/hdfs.headless.keytab -p hdfs@<realm>
 ```
+
+## Running on a large cluster
+
+This section is for enabling the agent on hundreds of DataNodes. On each node the agent adds
+a fraction of a microsecond per operation. The limits on such a cluster are elsewhere: the
+total event volume, the number of metric series, and raw files in HDFS that nothing deletes.
+Estimate them before the rollout and check them on a pilot.
+
+The figures below come from a synthetic run of the agent's data path without a DataNode:
+JDK 8, 11 cores, a local SSD, read events of users `user0`…`user199`. On that machine the
+writer thread wrote ~735k events/s; what it could not keep up with went to `EventsDropped`,
+and the operation threads never waited.
+
+### Estimating the event volume
+
+The agent writes one event per operation: per DataXceiver operation (`readBlock`,
+`writeBlock`, `transferBlock`, `copyBlock`, `replaceBlock`, `requestShortCircuitFds`), per
+`DataNode$DataTransfer` and per WebHDFS request. A long operation also writes an event every
+`flushIntervalSec`. The average line in the run is 343 bytes; in real events the length
+depends on user names, addresses and `path`.
+
+Estimate the operation rate from DataNode counters that exist without the agent. Read them
+twice, 60 seconds apart; the difference divided by 60 is operations per second:
+
+```bash
+curl -s 'http://<dn_host>:<dn_http_port>/jmx?qry=Hadoop:service=DataNode,name=DataNodeActivity-*' \
+  | grep -E '"(ReadBlockOp|WriteBlockOp|CopyBlockOp|ReplaceBlockOp)NumOps"'
+```
+
+`<dn_http_port>` is the DataNode HTTP port (`dfs.datanode.http.address`). If the DataNode
+HTTP endpoint requires SPNEGO, add `--negotiate -u :` after `kinit`. Short-circuit descriptor
+requests and transfers started by the DataNode itself are not in these four counters, so the
+estimate is a lower bound. Take it on several DataNodes with different load: nodes serving
+HBase or small positional reads run orders of magnitude more operations than nodes with
+large sequential reads.
+
+Volume per day is `operations/s × 343 B × 86,400`:
+
+| Operations/s per DataNode | Per DataNode per day | 500 DataNodes per day | 500 DataNodes in HDFS with replication 3 |
+|---|---|---|---|
+| 500 | 14.8 GB | 7.4 TB | 22 TB |
+| 1,000 | 29.6 GB | 14.8 TB | 44 TB |
+| 5,000 | 148 GB | 74 TB | 222 TB |
+
+The pilot gives the exact volume (see [Pilot](#pilot)).
+
+### Local buffer on a DataNode
+
+While shipping does not work (NameNode unavailable, no Kerberos ticket), closed files pile
+up in the events directory. The active file is rotated by whichever comes first:
+`eventsRotateSec` or `eventsMaxFileMb`. Hence:
+
+- the buffer lasts `eventsMaxFiles × min(eventsRotateSec, eventsMaxFileMb / rate)`;
+- it takes up to `eventsMaxFiles × eventsMaxFileMb` of disk, 25.6 GB with the defaults.
+
+| Events/s | Closed file size | Default buffer | Disk |
+|---|---|---|---|
+| 1,000 | ~103 MB (rotated every 300 s) | ~8.3 h | ~10 GB |
+| 5,000 | 256 MB (rotated every ~150 s) | ~4.2 h | 25.6 GB |
+
+Beyond `eventsMaxFiles` the oldest files are deleted and `EventFilesDropped` grows: the
+events of that period are lost.
+
+**Warning:** the default directory `/var/log/hadoop/hdfs-traffic` sits next to the DataNode
+logs. If that partition is smaller than the disk figure above, it fills up while shipping is
+down, and the DataNode can no longer write its log. Move the events directory to a
+partition with enough space or lower `eventsMaxFiles`.
+
+### Metrics on a cluster
+
+Per-user counters are off by default (`userMetrics=false`); JMX keeps the four writer thread
+counters. They are enough to monitor the agent on any cluster. The rest of this subsection
+applies only if you turn on `userMetrics=true`.
+
+With `maxUsers=2000` one DataNode publishes up to ~50–60k `UserTraffic` attributes, and 500
+DataNodes up to 25–30 million series. In a run with 2000 users and 16 (op, role, locality)
+combinations each, a snapshot took 27 ms and gave 96k attributes; the `/jmx` response was
+~8 MB per DataNode. Counters are not reset until the DataNode restarts: a user that once got
+a series keeps it.
+
+Before turning on `userMetrics=true`:
+
+- exclude `UserTraffic` from the Ambari Metrics sink (see [Metrics](#metrics)), otherwise all
+  per-user series go there;
+- for Prometheus, set `maxUsers` to the real number of cluster users and scrape `/jmx` with
+  `qry=Hadoop:service=DataNode,name=UserTraffic`, not the whole servlet.
+
+### Raw file retention
+
+No component deletes `<raw_root>/dt=<dt>`: `CompactEvents` only reads it. With rotation every
+300 seconds each DataNode puts at least 288 files a day, 500 DataNodes at least 144k files a
+day. These are objects in NameNode memory and the space from the volume table.
+
+Delete a raw partition after a successful `CompactEvents`, keeping a few days for
+`daily-report.sh -D` reruns. Before deleting, check that the compacted partition exists:
+
+```bash
+hdfs dfs -test -d /data/hdfs-traffic/events/dt=<dt> \
+  && hdfs dfs -rm -r -skipTrash /data/hdfs-traffic/raw/dt=<dt>
+```
+
+`<dt>` is the day as `YYYY-MM-DD`. After the deletion that day can no longer be rerun with
+`-D`: `CompactEvents` fails on the missing raw partition, and `events/dt=<dt>` stays as it
+was.
+
+### Pilot
+
+1. Estimate the operation rate on several DataNodes and the volume from the table above.
+2. Pick the partition for the events directory and `eventsMaxFiles` from the buffer
+   formula.
+3. Keep `userMetrics=false` (the default). If the per-user series are needed, turn them on
+   on the pilot first and measure the load on the metrics system (see
+   [Metrics on a cluster](#metrics-on-a-cluster)).
+4. Enable the agent on 5–10 DataNodes (see [Agent installation](#agent-installation)) and the
+   upload timer on the same nodes.
+5. After a day, check on every pilot DataNode:
+
+   - `EventsDropped` and `EventFilesDropped` are 0, `EventsQueueSize` is close to 0;
+   - `journalctl -u hdfs-traffic-upload.service` has no errors, the events directory does
+     not grow;
+   - `ReadBlockOpAvgTime` and `WriteBlockOpAvgTime` from `DataNodeActivity-*`, DataNode CPU
+     and GC pauses are at the level of the day before the agent.
+
+6. Compute the real volume per node and multiply by the number of DataNodes:
+
+   ```bash
+   hdfs dfs -du -s -h /data/hdfs-traffic/raw/dt=<dt>/dn=<host>
+   ```
+
+   `<host>` is the node key from `upload-events.sh -H`, by default the DataNode's
+   `hostname -f`.
+7. Set up raw file retention before enabling the agent on the whole cluster.
+
+Rollback: remove `-javaagent:...` from `HDFS_DATANODE_OPTS` and restart the DataNode. Keep the
+upload timer until the events directory is empty, then run
+`systemctl disable --now hdfs-traffic-upload.timer`.
 
 ## Block-to-file mapping (block-mapper)
 
@@ -637,6 +788,9 @@ docker compose --env-file .env.hdp down -v
 ```
 
 For Apache Hadoop use `apache` and `.env.apache`.
+
+The stand runs the agent with `userMetrics=true` by default because it checks the `/jmx`
+counters; keep this option in your own `AGENT_ARGS`.
 
 `run-scenario.sh` drives known traffic, one user per step: a client write with replication
 3, re-replication after `setrep`, remote and local reads, a WebHDFS write and read. Then it

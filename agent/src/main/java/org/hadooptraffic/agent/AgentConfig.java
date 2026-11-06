@@ -9,6 +9,7 @@ public final class AgentConfig {
   public static final int DEFAULT_EVENTS_MAX_FILES = 100;
   public static final int DEFAULT_FLUSH_INTERVAL_SEC = 10;
 
+  private boolean userMetrics;
   private int maxUsers = DEFAULT_MAX_USERS;
   private String eventsPath;
   private int eventsQueue = DEFAULT_EVENTS_QUEUE;
@@ -18,6 +19,11 @@ public final class AgentConfig {
   private int flushIntervalSec = DEFAULT_FLUSH_INTERVAL_SEC;
 
   private AgentConfig() {
+  }
+
+  /** Per-user JMX counters (UserTraffic); off by default because of their cardinality. */
+  public boolean userMetrics() {
+    return userMetrics;
   }
 
   public int maxUsers() {
@@ -66,6 +72,9 @@ public final class AgentConfig {
       String key = p.substring(0, eq).trim();
       String value = p.substring(eq + 1).trim();
       switch (key) {
+        case "userMetrics":
+          c.userMetrics = bool(key, value);
+          break;
         case "maxUsers":
           c.maxUsers = atLeast(key, value, 1);
           break;
@@ -95,6 +104,16 @@ public final class AgentConfig {
       }
     }
     return c;
+  }
+
+  private static boolean bool(String key, String value) {
+    if ("true".equals(value)) {
+      return true;
+    }
+    if ("false".equals(value)) {
+      return false;
+    }
+    throw new IllegalArgumentException(key + " must be true or false: " + value);
   }
 
   private static int atLeast(String key, String value, int min) {

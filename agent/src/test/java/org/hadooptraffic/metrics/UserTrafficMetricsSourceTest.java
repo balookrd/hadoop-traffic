@@ -1,8 +1,22 @@
 package org.hadooptraffic.metrics;
 
 import static org.junit.Assert.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
+import org.apache.hadoop.metrics2.MetricsCollector;
+import org.apache.hadoop.metrics2.MetricsInfo;
+import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.hadooptraffic.aggregate.TrafficAggregator;
 import org.hadooptraffic.aggregate.TrafficKey;
 import org.hadooptraffic.model.Locality;
@@ -11,6 +25,7 @@ import org.hadooptraffic.model.Role;
 import org.hadooptraffic.model.TrafficEvent;
 import org.hadooptraffic.sink.EventSinkStats;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
 
 public class UserTrafficMetricsSourceTest {
   @Test
@@ -62,5 +77,40 @@ public class UserTrafficMetricsSourceTest {
     assertEquals(Long.valueOf(2L), m.get("EventsDropped"));
     assertEquals(Long.valueOf(1L), m.get("EventFilesDropped"));
     assertEquals(Long.valueOf(5L), m.get("EventsQueueSize"));
+  }
+
+  /** userMetrics=false: the source still publishes events sink health, without user series. */
+  @Test
+  public void publishesOnlySinkHealthWithoutAggregator() {
+    MetricsCollector collector = mock(MetricsCollector.class);
+    MetricsRecordBuilder rb = mock(MetricsRecordBuilder.class);
+    when(collector.addRecord(any(MetricsInfo.class))).thenReturn(rb);
+    when(rb.setContext(anyString())).thenReturn(rb);
+
+    new UserTrafficMetricsSource(null, stats()).getMetrics(collector, true);
+
+    ArgumentCaptor<MetricsInfo> counters = ArgumentCaptor.forClass(MetricsInfo.class);
+    verify(rb, times(3)).addCounter(counters.capture(), anyLong());
+    assertEquals(Arrays.asList("EventsWritten", "EventsDropped", "EventFilesDropped"),
+        names(counters.getAllValues()));
+    verify(rb).addGauge(argThat((MetricsInfo i) -> "EventsQueueSize".equals(i.name())),
+        anyLong());
+  }
+
+  private static EventSinkStats stats() {
+    return new EventSinkStats() {
+      @Override public long eventsWritten() { return 10; }
+      @Override public long eventsDropped() { return 2; }
+      @Override public long queueSize() { return 5; }
+      @Override public long filesDropped() { return 1; }
+    };
+  }
+
+  private static List<String> names(List<MetricsInfo> infos) {
+    List<String> out = new ArrayList<>();
+    for (MetricsInfo i : infos) {
+      out.add(i.name());
+    }
+    return out;
   }
 }

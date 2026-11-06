@@ -17,7 +17,10 @@ public final class MetricsRegistrar {
   private MetricsRegistrar() {
   }
 
-  /** Called by the agent at install time; sinkStats is null when the events sink is off. */
+  /**
+   * Called by the agent at install time. agg is null when per-user metrics are off,
+   * sinkStats is null when the events sink is off; with both null nothing is registered.
+   */
   public static void init(TrafficAggregator agg, EventSinkStats stats) {
     aggregator = agg;
     sinkStats = stats;
@@ -26,12 +29,13 @@ public final class MetricsRegistrar {
   /** Called on exit of DataNode.startDataNode; later calls are no-ops. */
   public static void registerOnce() {
     TrafficAggregator agg = aggregator;
-    if (agg == null || !REGISTERED.compareAndSet(false, true)) {
+    EventSinkStats stats = sinkStats;
+    if ((agg == null && stats == null) || !REGISTERED.compareAndSet(false, true)) {
       return;
     }
     try {
       DefaultMetricsSystem.instance().register(SOURCE_NAME, "Per-user DataNode traffic",
-          new UserTrafficMetricsSource(agg, sinkStats));
+          new UserTrafficMetricsSource(agg, stats));
       AgentLog.info("hdfs-traffic-agent: UserTraffic metrics source registered");
     } catch (Throwable t) {
       AgentLog.warn("hdfs-traffic-agent: UserTraffic metrics source not registered; "

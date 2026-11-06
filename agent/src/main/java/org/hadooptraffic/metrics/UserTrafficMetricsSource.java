@@ -26,7 +26,10 @@ public final class UserTrafficMetricsSource implements MetricsSource {
   private final TrafficAggregator aggregator;
   private final EventSinkStats sinkStats;
 
-  /** @param sinkStats events sink health, or null when the sink is off */
+  /**
+   * @param aggregator per-user counters, or null when userMetrics is off
+   * @param sinkStats events sink health, or null when the sink is off
+   */
   public UserTrafficMetricsSource(TrafficAggregator aggregator, EventSinkStats sinkStats) {
     this.aggregator = aggregator;
     this.sinkStats = sinkStats;
@@ -35,8 +38,10 @@ public final class UserTrafficMetricsSource implements MetricsSource {
   @Override
   public void getMetrics(MetricsCollector collector, boolean all) {
     MetricsRecordBuilder rb = collector.addRecord(RECORD_INFO).setContext("dfs");
-    for (Map.Entry<String, Long> e : metricValues(aggregator.snapshot()).entrySet()) {
-      rb.addCounter(new MetricName(e.getKey(), describe(e.getKey())), e.getValue());
+    if (aggregator != null) {
+      for (Map.Entry<String, Long> e : metricValues(aggregator.snapshot()).entrySet()) {
+        rb.addCounter(new MetricName(e.getKey(), describe(e.getKey())), e.getValue());
+      }
     }
     if (sinkStats != null) {
       for (Map.Entry<String, Long> e : sinkValues(sinkStats).entrySet()) {

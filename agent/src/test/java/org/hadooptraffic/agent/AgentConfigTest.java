@@ -1,7 +1,9 @@
 package org.hadooptraffic.agent;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -10,6 +12,18 @@ public class AgentConfigTest {
   public void defaultsWhenNoArgs() {
     assertEquals(AgentConfig.DEFAULT_MAX_USERS, AgentConfig.parse(null).maxUsers());
     assertEquals(AgentConfig.DEFAULT_MAX_USERS, AgentConfig.parse("  ").maxUsers());
+  }
+
+  @Test
+  public void userMetricsOffByDefault() {
+    assertFalse(AgentConfig.parse(null).userMetrics());
+    assertFalse(AgentConfig.parse("userMetrics=false").userMetrics());
+    assertTrue(AgentConfig.parse("userMetrics=true,maxUsers=5").userMetrics());
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void rejectsNonBooleanUserMetrics() {
+    AgentConfig.parse("userMetrics=yes");
   }
 
   @Test
