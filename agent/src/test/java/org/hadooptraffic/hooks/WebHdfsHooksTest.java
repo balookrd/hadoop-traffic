@@ -114,4 +114,38 @@ public class WebHdfsHooksTest {
     assertNull(WebHdfsPaths.of(null));
     assertEquals("/user/erin/data.bin", WebHdfsPaths.of(new FakeHandler()));
   }
+
+  @Test
+  public void concurrentWritersKeepTheirOwnTotals() throws Exception {
+    int writers = 200;
+    Object[] owners = new Object[writers];
+    for (int i = 0; i < writers; i++) {
+      owners[i] = new Object();
+      boolean started = WebHdfsHooks.onRequestEnter("onCreate", erin, null, null);
+      WebHdfsHooks.bindPending(owners[i]);
+      WebHdfsHooks.onRequestExit(started);
+    }
+    Thread[] threads = new Thread[8];
+    for (int t = 0; t < threads.length; t++) {
+      threads[t] = new Thread(() -> {
+        for (int round = 0; round < 100; round++) {
+          for (Object owner : owners) {
+            WebHdfsHooks.addBytes(owner, 1);
+          }
+        }
+      });
+      threads[t].start();
+    }
+    for (Thread t : threads) {
+      t.join();
+    }
+    for (Object owner : owners) {
+      WebHdfsHooks.finish(owner);
+    }
+
+    assertEquals(writers, events.size());
+    for (TrafficEvent e : events) {
+      assertEquals(threads.length * 100L, e.getBytes());
+    }
+  }
 }

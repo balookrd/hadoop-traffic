@@ -4,11 +4,12 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import org.apache.hadoop.hdfs.net.Peer;
-import org.apache.hadoop.net.NetUtils;
 import org.hadooptraffic.model.Locality;
 
 /** Decides whether a peer runs on this host. */
 public final class LocalityResolver {
+  private static final LocalAddresses LOCAL_ADDRESSES = LocalAddresses.system();
+
   private LocalityResolver() {
   }
 
@@ -46,7 +47,9 @@ public final class LocalityResolver {
     if (a == null) {
       return Locality.REMOTE;
     }
-    // Checks the address against the local network interfaces (no per-address cache).
-    return a.isLoopbackAddress() || NetUtils.isLocalAddress(a) ? Locality.LOCAL : Locality.REMOTE;
+    // Same rule as NetUtils.isLocalAddress, but against a periodically refreshed address set:
+    // the per-call interface lookup costs milliseconds and runs on WebHDFS event loop threads.
+    return a.isLoopbackAddress() || a.isAnyLocalAddress() || LOCAL_ADDRESSES.contains(a)
+        ? Locality.LOCAL : Locality.REMOTE;
   }
 }

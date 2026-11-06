@@ -102,4 +102,34 @@ public class TrafficAggregatorTest {
     assertEquals(128L, s.getBytes());
     assertEquals(1L, s.getOps());
   }
+
+  @Test
+  public void concurrentEventsKeepExactTotalsAndCap() throws Exception {
+    TrafficAggregator agg = new TrafficAggregator(5);
+    int threads = 8;
+    int perThread = 20_000;
+    Thread[] ts = new Thread[threads];
+    for (int t = 0; t < threads; t++) {
+      ts[t] = new Thread(() -> {
+        for (int i = 0; i < perThread; i++) {
+          agg.onEvent(ev("u" + (i % 20), Op.READ, Role.CLIENT, 1, 0));
+        }
+      });
+      ts[t].start();
+    }
+    for (Thread t : ts) {
+      t.join();
+    }
+
+    assertEquals(5, agg.trackedUsers().size());
+    long bytes = 0;
+    long ops = 0;
+    for (TrafficCounters.Snapshot s : agg.snapshot().values()) {
+      bytes += s.getBytes();
+      ops += s.getOps();
+    }
+    assertEquals((long) threads * perThread, bytes);
+    assertEquals((long) threads * perThread, ops);
+    assertEquals(6, agg.snapshot().size()); // 5 admitted users + __other__
+  }
 }

@@ -29,14 +29,24 @@ public final class TrafficAggregator implements TrafficSink {
   public void onEvent(TrafficEvent e) {
     TrafficKey key = new TrafficKey(admitUser(e.getUser()), e.getOp(), e.getRole(),
         e.getLocality());
-    counters.computeIfAbsent(key, k -> new TrafficCounters())
-        .record(e.getBytes(), e.getEstimatedBytes(), e.isLast());
+    // get() first: on JDK 8 computeIfAbsent locks the bin even when the key exists, which
+    // serializes every operation of a hot key (e.g. one service user's reads).
+    TrafficCounters c = counters.get(key);
+    if (c == null) {
+      c = counters.computeIfAbsent(key, k -> new TrafficCounters());
+    }
+    c.record(e.getBytes(), e.getEstimatedBytes(), e.isLast());
   }
 
   /** Returns the user itself while under the cap, otherwise {@link #OTHER_USER}. */
   private String admitUser(String user) {
     if (users.contains(user)) {
       return user;
+    }
+    // The set only grows: once full, unknown users go to OTHER_USER without the lock.
+    // Re-check: the user may have taken the last slot right after the first contains().
+    if (users.size() >= maxUsers) {
+      return users.contains(user) ? user : OTHER_USER;
     }
     synchronized (users) {
       if (users.contains(user)) {

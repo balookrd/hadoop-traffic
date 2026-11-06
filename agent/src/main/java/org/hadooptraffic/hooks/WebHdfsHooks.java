@@ -25,11 +25,27 @@ public final class WebHdfsHooks {
   private static final String TASK_ID_KEY = "mapreduce.task.attempt.id";
 
   private static final ThreadLocal<OpContext> PENDING = new ThreadLocal<>();
-  // Weak keys: a stream that is never closed must not leak its context.
-  private static final Map<Object, OpContext> BOUND =
-      Collections.synchronizedMap(new WeakHashMap<>());
+  // Weak keys: a stream that is never closed must not leak its context. Striped by identity
+  // hash: addBytes runs per HTTP chunk on every Netty event loop, so one global lock would
+  // serialize all concurrent WebHDFS uploads.
+  private static final int STRIPES = 64; // power of two
+  private static final Map<Object, OpContext>[] BOUND = newStripes();
 
   private WebHdfsHooks() {
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<Object, OpContext>[] newStripes() {
+    Map<Object, OpContext>[] stripes = new Map[STRIPES];
+    for (int i = 0; i < STRIPES; i++) {
+      stripes[i] = Collections.synchronizedMap(new WeakHashMap<>());
+    }
+    return stripes;
+  }
+
+  private static Map<Object, OpContext> bound(Object owner) {
+    int h = System.identityHashCode(owner);
+    return BOUND[(h ^ (h >>> 16)) & (STRIPES - 1)];
   }
 
   public static boolean onRequestEnter(String method, UserGroupInformation ugi,
@@ -67,7 +83,7 @@ public final class WebHdfsHooks {
   public static void bindPending(Object owner) {
     OpContext ctx = PENDING.get();
     if (ctx != null && owner != null) {
-      BOUND.put(owner, ctx);
+      bound(owner).put(owner, ctx);
     }
   }
 
@@ -75,14 +91,14 @@ public final class WebHdfsHooks {
     if (n <= 0) {
       return;
     }
-    OpContext ctx = BOUND.get(owner);
+    OpContext ctx = bound(owner).get(owner);
     if (ctx != null) {
       ctx.addBytes(n);
     }
   }
 
   public static void finish(Object owner) {
-    OpContext ctx = BOUND.remove(owner);
+    OpContext ctx = bound(owner).remove(owner);
     if (ctx != null) {
       ctx.finish();
     }
@@ -90,7 +106,7 @@ public final class WebHdfsHooks {
 
   /** Read path: the byte count comes from the Netty stream itself. */
   public static void finishRead(ChunkedStream stream) {
-    OpContext ctx = BOUND.remove(stream);
+    OpContext ctx = bound(stream).remove(stream);
     if (ctx != null) {
       ctx.addBytes(stream.transferredBytes());
       ctx.finish();
