@@ -98,6 +98,75 @@ public class ModelSinksTest {
   }
 
   @Test
+  public void orcSpreadsLargeTablesOverWriterThreads() throws Exception {
+    Path dir = new Path(tmp.getRoot().toURI().toString(), "out");
+    OrcModelSink sink = new OrcModelSink(conf, dir, 3);
+    int n = 10_000; // about ten batches per table
+    for (int i = 0; i < n; i++) {
+      long id = 20000L + i;
+      sink.inode(id, 'F', "file-" + i);
+      sink.block(1_000_000L + i, id);
+      sink.edge(id, ModelFiles.ROOT);
+    }
+    sink.meta(1L, "fsimage_1", 0L);
+    sink.close();
+    for (String table : new String[] {"inode", "edge", "block_inode"}) {
+      for (int part = 0; part < 3; part++) {
+        assertTrue(table + " part " + part,
+            new File(tmp.getRoot(), "out/" + table + "/part-0000" + part + ".orc").isFile());
+      }
+    }
+    assertTrue(new File(tmp.getRoot(), "out/meta/part-00000.orc").isFile());
+    assertTrue(!new File(tmp.getRoot(), "out/meta/part-00001.orc").exists());
+    ModelFiles m = ModelFiles.read(conf, dir, MapperOptions.Format.ORC);
+    assertEquals(n, m.names.size());
+    assertEquals(n, m.blockInodes.size());
+    assertEquals(n, m.parents.size());
+    assertEquals("/file-9999", m.path(20000L + 9999L));
+  }
+
+  @Test
+  public void orcSmallAndEmptyTablesKeepOneFile() throws Exception {
+    Path dir = new Path(tmp.getRoot().toURI().toString(), "out");
+    OrcModelSink sink = new OrcModelSink(conf, dir, 4);
+    sink.inode(16385L, 'D', "");
+    sink.meta(1L, "fsimage_1", 0L);
+    sink.close();
+    // No blocks at all: file 0 still exists, with the schema and no rows.
+    org.apache.orc.Reader r = org.apache.orc.OrcFile.createReader(
+        Tables.file(dir, Tables.BLOCK_INODE, "orc"), org.apache.orc.OrcFile.readerOptions(conf));
+    assertEquals(0L, r.getNumberOfRows());
+    assertEquals("struct<block_id:bigint,inode_id:bigint>", r.getSchema().toString());
+    for (String table : new String[] {"inode", "edge", "block_inode"}) {
+      assertTrue(table, !new File(tmp.getRoot(), "out/" + table + "/part-00001.orc").exists());
+    }
+  }
+
+  @Test
+  public void orcWriterThreadFailureSurfaces() throws Exception {
+    Path dir = new Path(tmp.getRoot().toURI().toString(), "out");
+    File inodeDir = new File(tmp.getRoot(), "out/inode");
+    assertTrue(inodeDir.mkdirs());
+    // The second writer thread creates its file on its first batch and finds it taken.
+    assertTrue(new File(inodeDir, "part-00001.orc").createNewFile());
+    OrcModelSink sink = new OrcModelSink(conf, dir, 2);
+    try {
+      for (int i = 0; i < 10_000; i++) {
+        sink.inode(20000L + i, 'F', "file-" + i);
+      }
+      sink.close();
+      fail("expected the failure of the second inode writer");
+    } catch (IOException e) {
+      assertTrue(e.getMessage(), e.getMessage().contains("part-00001"));
+      try {
+        sink.close();
+      } catch (IOException again) {
+        // close after a failure may report the same failure; it must not hang.
+      }
+    }
+  }
+
+  @Test
   public void tsvFailedOpenThrowsCleanly() throws Exception {
     Path dir = new Path(tmp.getRoot().toURI().toString(), "out");
     File edgeDir = new File(tmp.getRoot(), "out/edge");

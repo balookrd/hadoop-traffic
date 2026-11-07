@@ -33,18 +33,18 @@ final class ModelFiles {
   static ModelFiles read(Configuration conf, Path dir, MapperOptions.Format f) throws IOException {
     ModelFiles m = new ModelFiles();
     if (f == MapperOptions.Format.ORC) {
-      for (Object[] r : orc(conf, Tables.file(dir, Tables.INODE, "orc"))) {
+      for (Object[] r : orcTable(conf, dir, Tables.INODE)) {
         long id = (Long) r[0];
         m.types.put(id, ((String) r[1]).charAt(0));
         m.names.put(id, (String) r[2]);
       }
-      for (Object[] r : orc(conf, Tables.file(dir, Tables.EDGE, "orc"))) {
+      for (Object[] r : orcTable(conf, dir, Tables.EDGE)) {
         m.parents.put((Long) r[0], (Long) r[1]);
       }
-      for (Object[] r : orc(conf, Tables.file(dir, Tables.BLOCK_INODE, "orc"))) {
+      for (Object[] r : orcTable(conf, dir, Tables.BLOCK_INODE)) {
         m.blockInodes.put((Long) r[0], (Long) r[1]);
       }
-      Object[] meta = orc(conf, Tables.file(dir, Tables.META, "orc")).get(0);
+      Object[] meta = orcTable(conf, dir, Tables.META).get(0);
       m.txid = (Long) meta[0];
       m.imageFile = (String) meta[1];
     } else {
@@ -89,6 +89,18 @@ final class ModelFiles {
       cur = parent;
     }
     return null;
+  }
+
+  /** All rows of every part file of a table. */
+  static List<Object[]> orcTable(Configuration conf, Path dir, String table) throws IOException {
+    List<Object[]> out = new ArrayList<>();
+    FileSystem fs = dir.getFileSystem(conf);
+    for (org.apache.hadoop.fs.FileStatus st : fs.listStatus(new Path(dir, table))) {
+      if (st.getPath().getName().matches("part-\\d{5}\\.orc")) {
+        out.addAll(orc(conf, st.getPath()));
+      }
+    }
+    return out;
   }
 
   /** All rows of an ORC file; bigint columns as Long, string columns as String. */

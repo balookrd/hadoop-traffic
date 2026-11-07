@@ -376,11 +376,14 @@ as an HDFS cluster administrator (a member of `dfs.cluster.administrators`, for 
 ```bash
 hdfs dfsadmin -fetchImage /data/fsimg
 hadoop jar block-mapper-<version>.jar org.hadooptraffic.mapper.FsImageMapper \
-  -i /data/fsimg/fsimage_<txid> -o hdfs:///data/hdfs-traffic/fsimage/dt=<dt> [--format tsv]
+  -i /data/fsimg/fsimage_<txid> -o hdfs:///data/hdfs-traffic/fsimage/dt=<dt> \
+  [--format tsv] [--threads <n>]
 ```
 
 `-i` is a local file, `<txid>` is the transaction id in the downloaded file name. `-o` is
-any Hadoop FS URI.
+any Hadoop FS URI. `--threads` is the number of ORC writer threads for each of the `inode`,
+`edge` and `block_inode` tables, 1 to 64, default 2 (see
+[Time and resources](#block-mapper-time-and-resources)); it has no effect on TSV.
 
 `fetchImage` returns the last NameNode checkpoint, not the live namespace: files created or
 renamed after the checkpoint are not in the image. The daily script waits for a fresh
@@ -389,7 +392,11 @@ checkpoint (see [Daily run](#daily-run)).
 **Warning:** do not call `hdfs dfsadmin -saveNamespace` on a production NameNode to get a
 newer image. It needs safe mode, and in safe mode the NameNode rejects all writes.
 
-Output: one file per table, `<out>/<table>/part-00000.orc`:
+Output: a directory per table, `<out>/<table>/part-<nnnnn>.orc`. `inode`, `edge` and
+`block_inode` are written to `part-00000.orc` … `part-<threads−1>.orc`, one file per writer
+thread. Row order across files is not kept; Spark and Hive read the whole directory. A
+thread that gets no batch of rows (1024 rows) creates no file. `part-00000.orc` always
+exists, even for an empty table. `meta` is one file.
 
 | Table | Columns |
 |---|---|
@@ -398,8 +405,10 @@ Output: one file per table, `<out>/<table>/part-00000.orc`:
 | `block_inode` | `block_id`, `inode_id` |
 | `meta` | `txid`, `image_file`, `parsed_at` (epoch ms) |
 
-ORC (the default): file version 0.12, ZLIB, bloom filters on `inode_id`, `child_id` and
-`block_id`; Hive 3.1 and Spark 3.5 read it. `--format tsv` writes `part-00000.tsv` with the
+ORC (the default): file version 0.12, ZLIB, no bloom filters (`ResolvePaths` only joins the
+tables, and an ORC bloom filter helps only a point filter such as `WHERE block_id = <id>`);
+Hive 3.1 and Spark 3.5 read it. `--format tsv` writes one `part-00000.tsv` per table from a
+single thread, with the
 same columns, tab-separated; `\`, tab, newline and carriage return in names are escaped as
 `\\`, `\t`, `\n`, `\r`.
 
@@ -413,8 +422,45 @@ to `<out>` on success. An existing `<out>` is never overwritten.
 | 1 | failure; the message starts with `block-mapper:` |
 | 2 | usage error |
 
-Memory: the namespace is read as a stream. Snapshot references and the ORC write buffers
-(bounded by ORC's memory manager) are kept in memory.
+### block-mapper time and resources
+
+One thread decodes the image. It hands full batches of rows round-robin to the ORC writer
+threads: `--threads` threads for each of `inode`, `edge` and `block_inode`, and one for
+`meta`. ORC compression takes about 80% of the time, so writer threads cut the run time
+until decoding becomes the limit.
+
+Measured on a synthetic image: 20.1 million inodes, 24 million blocks, 2017 MB, inodes in
+`INodeMap` bucket order as the NameNode saves them. Apple M3 Pro, JDK 8 (Liberica
+1.8.0_432), `-Xmx4g`, output to local `file://`. The image generator and the benchmark are
+in the tests: `SyntheticImage` and `MapperBench`.
+
+| Variant | Time | CPU | Peak heap |
+|---|---|---|---|
+| decoding only, no output | 3.7–4.1 s | 4.0–4.4 s | 0.3 GB |
+| before parallel writing: one thread, bloom filters | 21.6–22.1 s | 25 s | 0.9 GB |
+| `--threads 1` | 13.2 s | 24 s | 1.4 GB |
+| `--threads 2` (default) | 8.7 s | 24 s | 1.3 GB |
+| `--threads 4` | 7.5 s | 26 s | 1.6 GB |
+| `--threads 8` | 7.0 s | 27 s | 1.7 GB |
+
+The image is decoded and written as a stream, with no structure that grows with the number
+of inodes, so the time is proportional to the image size; one size was measured. For an
+image with 300 million blocks multiply by 12–15. Real block and inode ids are less ordered than synthetic ones, so ORC
+compresses them worse and spends more CPU [verify on a production cluster image]. Writing
+to HDFS adds the network transfer of the output: 0.4 GB for the synthetic image.
+
+- Cores: roughly `CPU / time` are busy, about three with `--threads 2`. If block-mapper
+  shares the host with a NameNode or other services, keep 1–2.
+- Memory: decoding keeps only snapshot references on the heap (`INODE_REFERENCE`, about
+  40 bytes each); the rest is ORC buffers. ORC's memory manager bounds them (half the heap)
+  and shrinks stripes as the number of files grows. The peak heap in the table was taken
+  with `-Xmx4g`, where GC is in no hurry. The same image runs with `-Xmx512m` and
+  `--threads 2` in 9.2 s, with `-Xmx1g` and `--threads 4` in 7.6 s. Set the heap with
+  `HADOOP_HEAPSIZE_MAX` or `HADOOP_CLIENT_OPTS` [verify the variable name for Hadoop 3.1 on
+  HDP].
+- An fsimage message over 64 MB is treated as corruption. The largest message is a
+  directory with all its children, about 5 bytes per child, so the
+  `dfs.namenode.fs-limits.max-directory-items` limit (up to 6.4 million) fits.
 
 Known issues:
 

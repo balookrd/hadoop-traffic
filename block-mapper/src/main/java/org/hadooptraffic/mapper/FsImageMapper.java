@@ -66,7 +66,7 @@ public final class FsImageMapper {
     }
     try {
       try (InodeModelSink sink = opts.format() == MapperOptions.Format.ORC
-          ? new OrcModelSink(conf, tmp)
+          ? new OrcModelSink(conf, tmp, opts.threads())
           : new TsvModelSink(fs, tmp)) {
         new FsImageReader(conf).read(image, sink);
       }

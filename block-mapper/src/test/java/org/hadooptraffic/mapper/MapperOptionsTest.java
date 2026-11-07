@@ -47,6 +47,26 @@ public class MapperOptionsTest {
     }
   }
 
+  @Test
+  public void threadsDefaultAndOverride() {
+    assertEquals(MapperOptions.DEFAULT_THREADS,
+        MapperOptions.parse(new String[] {"-i", "a", "-o", "b"}).threads());
+    assertEquals(4,
+        MapperOptions.parse(new String[] {"-i", "a", "-o", "b", "--threads", "4"}).threads());
+  }
+
+  @Test
+  public void rejectsBadThreads() {
+    for (String v : new String[] {"0", "65", "x", "-1"}) {
+      try {
+        MapperOptions.parse(new String[] {"-i", "a", "-o", "b", "--threads", v});
+        fail("expected IllegalArgumentException for " + v);
+      } catch (IllegalArgumentException e) {
+        assertTrue(e.getMessage(), e.getMessage().contains("--threads"));
+      }
+    }
+  }
+
   @Test(expected = IllegalArgumentException.class)
   public void rejectsOptionWithoutValue() {
     MapperOptions.parse(new String[] {"-i", "a", "-o"});
