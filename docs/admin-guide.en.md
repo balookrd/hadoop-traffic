@@ -599,6 +599,15 @@ Operations:
 
   Partitions written before the `spark-jobs` upgrade have `peer_ip` NULL. To fill a day,
   rerun it with `-D <dt>`.
+- The column `traffic_minute.busy_ms` was added the same way, after the first installations.
+  Add it once in beeline:
+
+  ```sql
+  ALTER TABLE hdfs_traffic.traffic_minute ADD COLUMNS (`busy_ms` BIGINT);
+  ```
+
+  Partitions written before the `spark-jobs` upgrade have `busy_ms` NULL. To fill a day,
+  rerun it with `-D <dt>`.
 
 Known issues:
 

@@ -297,26 +297,27 @@
 
 `event_path` группируется по `minute, user, op, role, locality, table_dir`. `minute` —
 начало минуты `ts` в epoch мс; `bytes` и `est_bytes` суммируются; `ops` — число событий с
-`last = true`. Колонка «строки» не входит в таблицу: она показывает, из каких событий `#`
+`last = true`. `busy_ms` — сумма приростов `dur_ms` с предыдущего события той же операции
+(`dn`, `op_id`); у первого события операции прирост равен `dur_ms`. Колонка «строки» не входит в таблицу: она показывает, из каких событий `#`
 собрана группа.
 
-| minute | user | op | role | locality | table_dir | bytes | est_bytes | ops | строки |
-|---|---|---|---|---|---|---|---|---|---|
-| 1793960100000 (10:15) | alice | write | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 83886080 | 0 | 0 | 5 |
-| 1793960100000 (10:15) | alice | write | client | remote | `?` | 2097152 | 0 | 1 | 10 |
-| 1793960100000 (10:15) | alice | write | pipeline | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 167772160 | 0 | 0 | 6, 7 |
-| 1793960100000 (10:15) | alice | write | pipeline | remote | `?` | 4194304 | 0 | 2 | 8, 9 |
-| 1793960100000 (10:15) | etl | webhdfs_create | client | remote | `/landing/crm` | 10485760 | 0 | 1 | 4 |
-| 1793960100000 (10:15) | etl | write | pipeline | remote | `/landing/crm` | 20971520 | 0 | 2 | 1, 2 |
-| 1793960100000 (10:15) | etl | write | webhdfs_proxy | local | `/landing/crm` | 10485760 | 0 | 1 | 3 |
-| 1793960160000 (10:16) | alice | write | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 50331648 | 0 | 1 | 13 |
-| 1793960160000 (10:16) | alice | write | pipeline | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 100663296 | 0 | 2 | 11, 12 |
-| 1793960160000 (10:16) | bob | scr_fds | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 0 | 134217728 | 1 | 14 |
-| 1793960160000 (10:16) | radcom | write | client | local | `/warehouse/tablespace/external/hive/radcom.db/cdr/gtpu` | 67108864 | 0 | 1 | 17 |
-| 1793960160000 (10:16) | radcom | write | pipeline | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/gtpu` | 134217728 | 0 | 2 | 15, 16 |
-| 1793960220000 (10:17) | carol | read | client | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 134217728 | 0 | 1 | 21, 22 |
-| 1793960220000 (10:17) | radcom | write | client | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/s1ap` | 16777216 | 0 | 1 | 20 |
-| 1793960220000 (10:17) | radcom | write | pipeline | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/s1ap` | 33554432 | 0 | 2 | 18, 19 |
+| minute | user | op | role | locality | table_dir | bytes | est_bytes | ops | busy_ms | строки |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1793960100000 (10:15) | alice | write | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 83886080 | 0 | 0 | 30000 | 5 |
+| 1793960100000 (10:15) | alice | write | client | remote | `?` | 2097152 | 0 | 1 | 1000 | 10 |
+| 1793960100000 (10:15) | alice | write | pipeline | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 167772160 | 0 | 0 | 60000 | 6, 7 |
+| 1793960100000 (10:15) | alice | write | pipeline | remote | `?` | 4194304 | 0 | 2 | 1940 | 8, 9 |
+| 1793960100000 (10:15) | etl | webhdfs_create | client | remote | `/landing/crm` | 10485760 | 0 | 1 | 4000 | 4 |
+| 1793960100000 (10:15) | etl | write | pipeline | remote | `/landing/crm` | 20971520 | 0 | 2 | 7440 | 1, 2 |
+| 1793960100000 (10:15) | etl | write | webhdfs_proxy | local | `/landing/crm` | 10485760 | 0 | 1 | 3750 | 3 |
+| 1793960160000 (10:16) | alice | write | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 50331648 | 0 | 1 | 22000 | 13 |
+| 1793960160000 (10:16) | alice | write | pipeline | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 100663296 | 0 | 2 | 43940 | 11, 12 |
+| 1793960160000 (10:16) | bob | scr_fds | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 0 | 134217728 | 1 | 2 | 14 |
+| 1793960160000 (10:16) | radcom | write | client | local | `/warehouse/tablespace/external/hive/radcom.db/cdr/gtpu` | 67108864 | 0 | 1 | 12000 | 17 |
+| 1793960160000 (10:16) | radcom | write | pipeline | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/gtpu` | 134217728 | 0 | 2 | 23940 | 15, 16 |
+| 1793960220000 (10:17) | carol | read | client | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 134217728 | 0 | 1 | 40500 | 21, 22 |
+| 1793960220000 (10:17) | radcom | write | client | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/s1ap` | 16777216 | 0 | 1 | 4000 | 20 |
+| 1793960220000 (10:17) | radcom | write | pipeline | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/s1ap` | 33554432 | 0 | 2 | 7940 | 18, 19 |
 
 Пояснения:
 
@@ -332,6 +333,15 @@
 - Трафик обоих каталогов `cdr` суммируется по префиксу: `table_dir LIKE
   '/warehouse/tablespace/external/hive/radcom.db/cdr/%'`. В 10:16 и 10:17 это группы событий
   15–17 и 18–20.
+- `busy_ms` операции A на dn1: 30000 в 10:15 (первое событие, `dur_ms` = 30000) и 22000 в
+  10:16 (52000 − 30000). В сумме это полная длительность операции, 52 с.
+- `busy_ms` относится к минуте события, как и `bytes`, а не к минутам, когда операция
+  реально шла. Чтение E началось в 10:16:40, но все 40500 мс попали в 10:17: первое событие
+  выдано в 10:17:10.
+- `busy_ms` разных операций складываются: у трёх реплик A в 10:15 вместе 60000 мс, хотя
+  минута одна. Это суммарное время операций, а не доля минуты.
+- Операция, начатая до 00:00 UTC дня `dt`, учитывает в первом событии дня только время после
+  полуночи: часть до полуночи уже учтена в партиции предыдущего дня.
 - `start` и `dur_ms` в `traffic_minute` не переносятся. Скорость отдельной операции
   считается только по `event_path` (см. ниже).
 
@@ -378,6 +388,30 @@ ORDER BY minute, mib_per_s DESC;
 | minute | table_dir | mib_per_s | строки |
 |---|---|---|---|
 | 10:17 | `/warehouse/tablespace/managed/hive/sales.db/orders` | 2.133 | 21, 22 |
+
+Средняя скорость одной операции по таблицам за минуту, МиБ/с. Делитель — `busy_ms`, а не
+60 с, поэтому значение не зависит от того, сколько операций шло параллельно:
+
+```sql
+SELECT minute, table_dir, SUM(bytes) / 1048576 / (SUM(busy_ms) / 1000) AS mib_per_s
+FROM hdfs_traffic.traffic_minute
+WHERE dt = '2026-11-06'
+  AND op IN ('write', 'webhdfs_create', 'webhdfs_append') AND role = 'client'
+GROUP BY minute, table_dir
+HAVING SUM(busy_ms) > 0
+ORDER BY minute, mib_per_s DESC;
+```
+
+Результат на данных примера:
+
+| minute | table_dir | mib_per_s | строки |
+|---|---|---|---|
+| 10:15 | `/warehouse/tablespace/managed/hive/sales.db/orders` | 2.667 | 5 |
+| 10:15 | `/landing/crm` | 2.5 | 4 |
+| 10:15 | `?` | 2 | 10 |
+| 10:16 | `/warehouse/tablespace/external/hive/radcom.db/cdr/gtpu` | 5.333 | 17 |
+| 10:16 | `/warehouse/tablespace/managed/hive/sales.db/orders` | 2.182 | 13 |
+| 10:17 | `/warehouse/tablespace/external/hive/radcom.db/cdr/s1ap` | 4 | 20 |
 
 Скорость каждой завершённой операции, МиБ/с. Длительность — `MAX(dur_ms)`, потому что
 `dur_ms` нарастает внутри операции:

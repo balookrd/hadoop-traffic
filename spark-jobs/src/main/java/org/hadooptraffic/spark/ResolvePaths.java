@@ -3,10 +3,15 @@ package org.hadooptraffic.spark;
 import static org.apache.spark.sql.functions.callUDF;
 import static org.apache.spark.sql.functions.coalesce;
 import static org.apache.spark.sql.functions.col;
+import static org.apache.spark.sql.functions.greatest;
+import static org.apache.spark.sql.functions.lag;
+import static org.apache.spark.sql.functions.least;
 import static org.apache.spark.sql.functions.lit;
 import static org.apache.spark.sql.functions.sum;
 import static org.apache.spark.sql.functions.when;
 
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import org.apache.hadoop.fs.FileSystem;
@@ -17,6 +22,7 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SaveMode;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.api.java.UDF1;
+import org.apache.spark.sql.expressions.Window;
 import org.apache.spark.sql.types.DataTypes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -117,11 +123,12 @@ public final class ResolvePaths {
     eventPath.write().mode(SaveMode.Overwrite).option("compression", "zlib").orc(eventPathDir);
     catalog.addPartition(Ddl.EVENT_PATH, dt, eventPathDir);
 
-    Dataset<Row> minutes = eventPath
+    Dataset<Row> minutes = withBusyMs(eventPath, dayStartMillis(dt))
         .withColumn("minute", col("ts").divide(60_000L).cast("long").multiply(60_000L))
         .groupBy("minute", "user", "op", "role", "locality", "table_dir")
         .agg(sum("bytes").as("bytes"), sum("est_bytes").as("est_bytes"),
-            sum(when(col("last"), 1L).otherwise(0L)).as("ops"));
+            sum(when(col("last"), 1L).otherwise(0L)).as("ops"),
+            sum("busy_ms").as("busy_ms"));
     String trafficDir = layout.trafficMinute(dt);
     minutes.write().mode(SaveMode.Overwrite).option("compression", "zlib").orc(trafficDir);
     catalog.addPartition(Ddl.TRAFFIC_MINUTE, dt, trafficDir);
@@ -129,6 +136,24 @@ public final class ResolvePaths {
     long total = eventPath.count();
     long unresolved = eventPath.filter(col("path").equalTo(lit(TableDir.UNKNOWN))).count();
     return new Result(image, total, unresolved);
+  }
+
+  /**
+   * Adds busy_ms: the growth of dur_ms since the previous event of the same operation
+   * (dn, op_id), i.e. how long the operation ran up to this event. Like bytes, it is assigned
+   * to the minute of the event's ts. The first event of an operation on day D counts from the
+   * operation's start, but not from before 00:00 UTC of D: the earlier part was counted on D-1.
+   */
+  static Dataset<Row> withBusyMs(Dataset<Row> events, long dayStart) {
+    Column prev = lag(col("dur_ms"), 1)
+        .over(Window.partitionBy("dn", "op_id").orderBy(col("ts"), col("dur_ms")));
+    Column first = least(col("dur_ms"), col("ts").minus(lit(dayStart)));
+    return events.withColumn("busy_ms",
+        greatest(lit(0L), when(prev.isNull(), first).otherwise(col("dur_ms").minus(prev))));
+  }
+
+  static long dayStartMillis(String dt) {
+    return LocalDate.parse(dt).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
   }
 
   private static FileSystem fs(SparkSession spark, String uri) {

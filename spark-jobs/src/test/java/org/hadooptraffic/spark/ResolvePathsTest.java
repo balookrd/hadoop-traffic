@@ -22,7 +22,8 @@ import org.junit.rules.TemporaryFolder;
 public class ResolvePathsTest {
   static final String DT = "2026-11-06";
   static final String IMG = "2026-11-07";
-  static final long T = 1_762_430_400_000L;       // a minute start (UTC)
+  static final long DAY = 1_793_923_200_000L;     // 2026-11-06 00:00 UTC
+  static final long T = DAY + 12 * 3_600_000L;    // a minute start (UTC) on DT
 
   @Rule
   public TemporaryFolder tmp = new TemporaryFolder();
@@ -93,6 +94,13 @@ public class ResolvePathsTest {
         block == -1 ? null : "BP-1", block, block, bytes, 0L, 1000L, last, peer, path);
   }
 
+  /** One event of a multi-event operation: op_id, start and dur_ms are explicit. */
+  private static Row op(String opId, long start, long ts, String user, long bytes,
+      boolean last) {
+    return RowFactory.create(ts, start, "dn1", opId, user, "write", "client", "remote", "BP-1",
+        1001L, 1001L, bytes, 0L, ts - start, last, "/10.0.0.1:1", null);
+  }
+
   private void events() {
     List<Row> rows = new ArrayList<>();
     rows.add(ev(T + 1_000, "alice", "write", 1001, 100, false, null));
@@ -109,6 +117,11 @@ public class ResolvePathsTest {
         1001, 0, true, null));
     rows.add(ev(T + 9_500, "ivan", "read", "local", "/10.0.0.9:2", 1001, 4, true, null));
     rows.add(ev(T + 9_800, "judy", "transfer", "remote", "10.0.0.3:50010", 1001, 6, true, null));
+    // kate: one operation over two minutes; busy_ms is the growth of dur_ms per event.
+    rows.add(op("k-1", T + 50_000, T + 55_000, "kate", 20, false));
+    rows.add(op("k-1", T + 50_000, T + 65_000, "kate", 30, true));
+    // liam: started on the previous day; only the part after 00:00 UTC counts on DT.
+    rows.add(op("l-1", DAY - 8_000, DAY + 2_000, "liam", 5, true));
     orc(rows, EventSchema.SCHEMA, layout.events(DT));
   }
 
@@ -133,7 +146,7 @@ public class ResolvePathsTest {
   public void resolvesPathsAndTableDirs() throws Exception {
     ResolvePaths.Result r = ResolvePaths.run(spark, layout, DT, null, Catalog.NONE);
     assertEquals(IMG, r.imageDt);
-    assertEquals(13L, r.events);
+    assertEquals(16L, r.events);
     assertEquals(2L, r.unresolved);  // erin (snapshot-only inode) and grace (unknown block)
 
     Map<String, String> m = pathsByUser();
@@ -174,7 +187,8 @@ public class ResolvePathsTest {
     for (Row r : spark.read().orc(layout.trafficMinute(DT)).collectAsList()) {
       m.put(r.getLong(r.fieldIndex("minute")) + "|" + r.getString(r.fieldIndex("user")) + "|"
               + r.getString(r.fieldIndex("op")) + "|" + r.getString(r.fieldIndex("table_dir")),
-          new long[] {r.getLong(r.fieldIndex("bytes")), r.getLong(r.fieldIndex("ops"))});
+          new long[] {r.getLong(r.fieldIndex("bytes")), r.getLong(r.fieldIndex("ops")),
+              r.getLong(r.fieldIndex("busy_ms"))});
     }
     // alice: minute T has 100 (not last) + 10 (last) bytes, 1 op; minute T+60s has 50, 1 op.
     assertEquals(110L, m.get(T + "|alice|write|/warehouse/db1/t1")[0]);
@@ -184,8 +198,18 @@ public class ResolvePathsTest {
     assertEquals(40L, m.get(T + "|carol|write|/warehouse/db1/t3")[0]);
     assertEquals(7L, m.get(T + "|erin|write|?")[0]);
     assertEquals(9L, m.get(T + "|frank|webhdfs_create|/traffic")[0]);
+    // Single-event operations: busy_ms is dur_ms (1000) per event.
+    assertEquals(2000L, m.get(T + "|alice|write|/warehouse/db1/t1")[2]);
+    assertEquals(1000L, m.get((T + 60_000) + "|alice|write|/warehouse/db1/t1")[2]);
+    // kate: 5 s up to the first event (minute T), 10 s more up to the last (minute T+60s).
+    assertEquals(5000L, m.get(T + "|kate|write|/warehouse/db1/t1")[2]);
+    assertEquals(0L, m.get(T + "|kate|write|/warehouse/db1/t1")[1]);
+    assertEquals(10000L, m.get((T + 60_000) + "|kate|write|/warehouse/db1/t1")[2]);
+    assertEquals(1L, m.get((T + 60_000) + "|kate|write|/warehouse/db1/t1")[1]);
+    // liam: dur_ms 10 s, but only 2 s fall on DT.
+    assertEquals(2000L, m.get(DAY + "|liam|write|/warehouse/db1/t1")[2]);
     assertEquals(new java.util.HashSet<>(java.util.Arrays.asList("minute", "user", "op", "role",
-        "locality", "table_dir", "bytes", "est_bytes", "ops")),
+        "locality", "table_dir", "bytes", "est_bytes", "ops", "busy_ms")),
         new java.util.HashSet<>(java.util.Arrays.asList(
             spark.read().orc(layout.trafficMinute(DT)).schema().fieldNames())));
   }
@@ -196,6 +220,6 @@ public class ResolvePathsTest {
     long first = spark.read().orc(layout.trafficMinute(DT)).count();
     ResolvePaths.run(spark, layout, DT, IMG, Catalog.NONE);
     assertEquals(first, spark.read().orc(layout.trafficMinute(DT)).count());
-    assertEquals(13L, spark.read().orc(layout.eventPath(DT)).count());
+    assertEquals(16L, spark.read().orc(layout.eventPath(DT)).count());
   }
 }

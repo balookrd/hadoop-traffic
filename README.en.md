@@ -170,7 +170,7 @@ Tables:
 | `events` | the event fields of the JSONL (`ts`, `start`, `dn`, `op_id`, `user`, `op`, `role`, `locality`, `bpid`, `block_id`, `file_block_id`, `bytes`, `est_bytes`, `dur_ms`, `last`, `peer`, `path`) |
 | `fs_inode`, `fs_edge`, `fs_block_inode`, `fs_meta` | the block-mapper tables; `dt` is the image date |
 | `event_path` | the `events` columns plus `inode_id`, `table_dir`, `peer_ip` (the address from `peer` without the port; only when `locality = remote`, otherwise NULL) |
-| `traffic_minute` | `minute` (epoch ms of the UTC minute start), `user`, `op`, `role`, `locality`, `table_dir`, `bytes`, `est_bytes`, `ops` (number of `last` events) |
+| `traffic_minute` | `minute` (epoch ms of the UTC minute start), `user`, `op`, `role`, `locality`, `table_dir`, `bytes`, `est_bytes`, `ops` (number of `last` events), `busy_ms` (sum of `dur_ms` growth over operations: how many ms the operations ran up to the events of this minute) |
 
 All tables are EXTERNAL ORC with ZLIB. The DDL is in `hive/schema.sql`, generated from
 `org.hadooptraffic.spark.Ddl`; the jobs create the tables with `CREATE ... IF NOT EXISTS`.

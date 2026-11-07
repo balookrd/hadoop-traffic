@@ -602,6 +602,15 @@ CRON_TZ=UTC
 
   В партициях, записанных до обновления `spark-jobs`, `peer_ip` равен NULL. Чтобы заполнить
   день, перезапустите его с `-D <dt>`.
+- Колонка `traffic_minute.busy_ms` добавлена так же, позже первых установок. Добавьте её в
+  beeline один раз:
+
+  ```sql
+  ALTER TABLE hdfs_traffic.traffic_minute ADD COLUMNS (`busy_ms` BIGINT);
+  ```
+
+  В партициях, записанных до обновления `spark-jobs`, `busy_ms` равен NULL. Чтобы заполнить
+  день, перезапустите его с `-D <dt>`.
 
 Известные проблемы:
 
