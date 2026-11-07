@@ -446,6 +446,7 @@ mvn clean verify
 | `--db <имя>` | `hdfs_traffic` | база Hive |
 | `--catalog hive\|none` | `hive` | `none` только пишет файлы и ничего не регистрирует в Hive |
 | `--image-dt <dt>` | последний образ | только `ResolvePaths`: дата используемого fsimage |
+| `--nets name=cidr[,name=cidr...]` | нет | только `ResolvePaths`: сети для `traffic_minute.origin`, например `own=10.0.0.0/24,cluster_b=172.16.0.0/24`. Без опции remote-события получают `other`. Правила — в [README](../README.md#источник-обращения-origin) |
 
 Каждый запуск перезаписывает только свои партиции `dt`, поэтому упавший запуск повторяют с
 тем же `--dt`.
@@ -513,6 +514,7 @@ standby NameNode (HA) или SecondaryNameNode, `dfs.namenode.checkpoint.period`
 daily-report.sh -n <active NameNode http URL> [-D <dt>] [-r root] [-w workdir]
                 [-m mapper.jar] [-j spark-jobs.jar] [-c hive|none]
                 [-k keytab -p principal] [-s spark_principal -t spark_keytab]
+                [-N name=cidr[,name=cidr...]]
 ```
 
 | Опция | По умолчанию | Что делает |
@@ -526,6 +528,7 @@ daily-report.sh -n <active NameNode http URL> [-D <dt>] [-r root] [-w workdir]
 | `-c` | `hive` | `--catalog` джоб |
 | `-k`, `-p` | нет | keytab и principal администратора HDFS; оба или ни одного |
 | `-s`, `-t` | нет | principal и keytab для spark-submit (`--principal/--keytab`); обязательны с `-c hive` или `--master yarn` |
+| `-N` | нет | `--nets` для `ResolvePaths` |
 
 Переменные окружения:
 
@@ -602,14 +605,17 @@ CRON_TZ=UTC
 
   В партициях, записанных до обновления `spark-jobs`, `peer_ip` равен NULL. Чтобы заполнить
   день, перезапустите его с `-D <dt>`.
-- Колонка `traffic_minute.busy_ms` добавлена так же, позже первых установок. Добавьте её в
-  beeline один раз:
+- Колонки `traffic_minute.busy_ms` и `traffic_minute.origin` добавлены так же, позже первых
+  установок. Добавьте их в beeline один раз, в этом порядке (порядок колонок в ORC-файлах
+  совпадает с DDL):
 
   ```sql
   ALTER TABLE hdfs_traffic.traffic_minute ADD COLUMNS (`busy_ms` BIGINT);
+  ALTER TABLE hdfs_traffic.traffic_minute ADD COLUMNS (`origin` STRING);
   ```
 
-  В партициях, записанных до обновления `spark-jobs`, `busy_ms` равен NULL. Чтобы заполнить
+  Если `busy_ms` уже добавлена, выполните только вторую команду. В партициях, записанных до
+  обновления `spark-jobs`, эти колонки равны NULL. Чтобы заполнить
   день, перезапустите его с `-D <dt>`.
 
 Известные проблемы:

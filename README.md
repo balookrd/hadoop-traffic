@@ -173,7 +173,7 @@ block-mapper в поминутный трафик по пользователя�
 | `events` | поля событий JSONL (`ts`, `start`, `dn`, `op_id`, `user`, `op`, `role`, `locality`, `bpid`, `block_id`, `file_block_id`, `bytes`, `est_bytes`, `dur_ms`, `last`, `peer`, `path`) |
 | `fs_inode`, `fs_edge`, `fs_block_inode`, `fs_meta` | таблицы block-mapper; `dt` — дата образа |
 | `event_path` | колонки `events` плюс `inode_id`, `table_dir`, `peer_ip` (адрес из `peer` без порта; только при `locality = remote`, иначе NULL) |
-| `traffic_minute` | `minute` (epoch, мс начала минуты UTC), `user`, `op`, `role`, `locality`, `table_dir`, `bytes`, `est_bytes`, `ops` (число событий `last`), `busy_ms` (сумма приростов `dur_ms` по операциям: сколько мс операции работали до событий этой минуты) |
+| `traffic_minute` | `minute` (epoch, мс начала минуты UTC), `user`, `op`, `role`, `locality`, `table_dir`, `bytes`, `est_bytes`, `ops` (число событий `last`), `busy_ms` (сумма приростов `dur_ms` по операциям: сколько мс операции работали до событий этой минуты), `origin` (источник обращения, см. ниже) |
 
 Все таблицы — EXTERNAL ORC с ZLIB. DDL лежит в `hive/schema.sql`, сгенерированном из
 `org.hadooptraffic.spark.Ddl`; джобы создают таблицы через `CREATE ... IF NOT EXISTS`.
@@ -200,6 +200,38 @@ block-mapper в поминутный трафик по пользователя�
   джоб, временные выходы), в образ не попадают и получают `?`.
 - У непартиционированной таблицы с подкаталогами `table_dir` — подкаталог, на уровень ниже
   таблицы.
+
+### Источник обращения (`origin`)
+
+`origin` в `traffic_minute` показывает, откуда пришло обращение. Сети задаёт опция
+`ResolvePaths --nets name=cidr[,name=cidr...]` (в `daily-report.sh` — `-N`), например
+`--nets own=10.0.0.0/24,cluster_b=172.16.0.0/24`.
+
+| `origin` | Когда |
+|---|---|
+| `local` | `locality = local`: клиент на хосте той же DataNode или подключился через domain socket |
+| имя сети из `--nets` | `locality = remote`, `peer_ip` входит в CIDR этой сети; при пересечении сетей выигрывает первая в списке |
+| `other` | `locality = remote`, `peer_ip` не входит ни в одну сеть, не задан или не является IP-адресом; без `--nets` — все remote-события |
+
+- Имя сети: `[a-z][a-z0-9_]*`, кроме `local` и `other`. Одно имя можно повторить, чтобы
+  задать несколько CIDR одной сети. CIDR с ненулевыми битами хоста (`10.0.0.5/24`)
+  отклоняется. Поддерживаются IPv4 и IPv6.
+- Имена хостов в `peer_ip` не резолвятся через DNS и получают `other`.
+- `origin` разделяет сети, но не кластеры: для `role = pipeline` и `role = datanode`
+  `peer_ip` — соседняя DataNode, поэтому для разбивки по источникам клиентов фильтруйте
+  `role = 'client'`.
+- Если клиент ходит через NAT или прокси (Knox, балансировщик перед WebHDFS), `origin`
+  определяется по адресу прокси.
+
+Клиентский трафик по источникам за день, МиБ:
+
+```sql
+SELECT origin, op, SUM(bytes) / 1048576 AS mib, SUM(ops) AS ops
+FROM hdfs_traffic.traffic_minute
+WHERE dt = '2026-11-06' AND role = 'client'
+GROUP BY origin, op
+ORDER BY mib DESC;
+```
 
 ### Пример запроса
 

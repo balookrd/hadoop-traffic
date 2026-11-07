@@ -298,26 +298,28 @@
 `event_path` группируется по `minute, user, op, role, locality, table_dir`. `minute` —
 начало минуты `ts` в epoch мс; `bytes` и `est_bytes` суммируются; `ops` — число событий с
 `last = true`. `busy_ms` — сумма приростов `dur_ms` с предыдущего события той же операции
-(`dn`, `op_id`); у первого события операции прирост равен `dur_ms`. Колонка «строки» не входит в таблицу: она показывает, из каких событий `#`
+(`dn`, `op_id`); у первого события операции прирост равен `dur_ms`. `origin` посчитан с
+`--nets own=10.0.0.0/24`: у событий с `locality = local` это `local`, остальные адреса
+примера лежат в 10.0.0.0/24 и получают `own`. Колонка «строки» не входит в таблицу: она показывает, из каких событий `#`
 собрана группа.
 
-| minute | user | op | role | locality | table_dir | bytes | est_bytes | ops | busy_ms | строки |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 1793960100000 (10:15) | alice | write | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 83886080 | 0 | 0 | 30000 | 5 |
-| 1793960100000 (10:15) | alice | write | client | remote | `?` | 2097152 | 0 | 1 | 1000 | 10 |
-| 1793960100000 (10:15) | alice | write | pipeline | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 167772160 | 0 | 0 | 60000 | 6, 7 |
-| 1793960100000 (10:15) | alice | write | pipeline | remote | `?` | 4194304 | 0 | 2 | 1940 | 8, 9 |
-| 1793960100000 (10:15) | etl | webhdfs_create | client | remote | `/landing/crm` | 10485760 | 0 | 1 | 4000 | 4 |
-| 1793960100000 (10:15) | etl | write | pipeline | remote | `/landing/crm` | 20971520 | 0 | 2 | 7440 | 1, 2 |
-| 1793960100000 (10:15) | etl | write | webhdfs_proxy | local | `/landing/crm` | 10485760 | 0 | 1 | 3750 | 3 |
-| 1793960160000 (10:16) | alice | write | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 50331648 | 0 | 1 | 22000 | 13 |
-| 1793960160000 (10:16) | alice | write | pipeline | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 100663296 | 0 | 2 | 43940 | 11, 12 |
-| 1793960160000 (10:16) | bob | scr_fds | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 0 | 134217728 | 1 | 2 | 14 |
-| 1793960160000 (10:16) | radcom | write | client | local | `/warehouse/tablespace/external/hive/radcom.db/cdr/gtpu` | 67108864 | 0 | 1 | 12000 | 17 |
-| 1793960160000 (10:16) | radcom | write | pipeline | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/gtpu` | 134217728 | 0 | 2 | 23940 | 15, 16 |
-| 1793960220000 (10:17) | carol | read | client | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 134217728 | 0 | 1 | 40500 | 21, 22 |
-| 1793960220000 (10:17) | radcom | write | client | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/s1ap` | 16777216 | 0 | 1 | 4000 | 20 |
-| 1793960220000 (10:17) | radcom | write | pipeline | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/s1ap` | 33554432 | 0 | 2 | 7940 | 18, 19 |
+| minute | user | op | role | locality | table_dir | bytes | est_bytes | ops | busy_ms | origin | строки |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1793960100000 (10:15) | alice | write | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 83886080 | 0 | 0 | 30000 | local | 5 |
+| 1793960100000 (10:15) | alice | write | client | remote | `?` | 2097152 | 0 | 1 | 1000 | own | 10 |
+| 1793960100000 (10:15) | alice | write | pipeline | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 167772160 | 0 | 0 | 60000 | own | 6, 7 |
+| 1793960100000 (10:15) | alice | write | pipeline | remote | `?` | 4194304 | 0 | 2 | 1940 | own | 8, 9 |
+| 1793960100000 (10:15) | etl | webhdfs_create | client | remote | `/landing/crm` | 10485760 | 0 | 1 | 4000 | own | 4 |
+| 1793960100000 (10:15) | etl | write | pipeline | remote | `/landing/crm` | 20971520 | 0 | 2 | 7440 | own | 1, 2 |
+| 1793960100000 (10:15) | etl | write | webhdfs_proxy | local | `/landing/crm` | 10485760 | 0 | 1 | 3750 | local | 3 |
+| 1793960160000 (10:16) | alice | write | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 50331648 | 0 | 1 | 22000 | local | 13 |
+| 1793960160000 (10:16) | alice | write | pipeline | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 100663296 | 0 | 2 | 43940 | own | 11, 12 |
+| 1793960160000 (10:16) | bob | scr_fds | client | local | `/warehouse/tablespace/managed/hive/sales.db/orders` | 0 | 134217728 | 1 | 2 | local | 14 |
+| 1793960160000 (10:16) | radcom | write | client | local | `/warehouse/tablespace/external/hive/radcom.db/cdr/gtpu` | 67108864 | 0 | 1 | 12000 | local | 17 |
+| 1793960160000 (10:16) | radcom | write | pipeline | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/gtpu` | 134217728 | 0 | 2 | 23940 | own | 15, 16 |
+| 1793960220000 (10:17) | carol | read | client | remote | `/warehouse/tablespace/managed/hive/sales.db/orders` | 134217728 | 0 | 1 | 40500 | own | 21, 22 |
+| 1793960220000 (10:17) | radcom | write | client | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/s1ap` | 16777216 | 0 | 1 | 4000 | own | 20 |
+| 1793960220000 (10:17) | radcom | write | pipeline | remote | `/warehouse/tablespace/external/hive/radcom.db/cdr/s1ap` | 33554432 | 0 | 2 | 7940 | own | 18, 19 |
 
 Пояснения:
 

@@ -170,7 +170,7 @@ Tables:
 | `events` | the event fields of the JSONL (`ts`, `start`, `dn`, `op_id`, `user`, `op`, `role`, `locality`, `bpid`, `block_id`, `file_block_id`, `bytes`, `est_bytes`, `dur_ms`, `last`, `peer`, `path`) |
 | `fs_inode`, `fs_edge`, `fs_block_inode`, `fs_meta` | the block-mapper tables; `dt` is the image date |
 | `event_path` | the `events` columns plus `inode_id`, `table_dir`, `peer_ip` (the address from `peer` without the port; only when `locality = remote`, otherwise NULL) |
-| `traffic_minute` | `minute` (epoch ms of the UTC minute start), `user`, `op`, `role`, `locality`, `table_dir`, `bytes`, `est_bytes`, `ops` (number of `last` events), `busy_ms` (sum of `dur_ms` growth over operations: how many ms the operations ran up to the events of this minute) |
+| `traffic_minute` | `minute` (epoch ms of the UTC minute start), `user`, `op`, `role`, `locality`, `table_dir`, `bytes`, `est_bytes`, `ops` (number of `last` events), `busy_ms` (sum of `dur_ms` growth over operations: how many ms the operations ran up to the events of this minute), `origin` (where the access came from, see below) |
 
 All tables are EXTERNAL ORC with ZLIB. The DDL is in `hive/schema.sql`, generated from
 `org.hadooptraffic.spark.Ddl`; the jobs create the tables with `CREATE ... IF NOT EXISTS`.
@@ -197,6 +197,38 @@ Effects:
   jars, temporary outputs) are not in the image and get `?`.
 - An unpartitioned table with subdirectories gets the subdirectory as `table_dir`, one level
   below the table.
+
+### Access origin (`origin`)
+
+`origin` in `traffic_minute` shows where an access came from. Networks are set with
+`ResolvePaths --nets name=cidr[,name=cidr...]` (`-N` in `daily-report.sh`), for example
+`--nets own=10.0.0.0/24,cluster_b=172.16.0.0/24`.
+
+| `origin` | When |
+|---|---|
+| `local` | `locality = local`: the client is on the DataNode's own host or connected through a domain socket |
+| network name from `--nets` | `locality = remote` and `peer_ip` is in that network's CIDR; with overlapping networks the first one in the list wins |
+| `other` | `locality = remote` and `peer_ip` is in no network, missing or not an IP address; without `--nets`, every remote event |
+
+- A network name is `[a-z][a-z0-9_]*`, except `local` and `other`. A name may repeat to give
+  one network several CIDRs. A CIDR with host bits set (`10.0.0.5/24`) is rejected. IPv4 and
+  IPv6 are supported.
+- Host names in `peer_ip` are not resolved through DNS and get `other`.
+- `origin` separates networks, not clusters: for `role = pipeline` and `role = datanode`
+  `peer_ip` is the neighbouring DataNode, so filter on `role = 'client'` to break down client
+  sources.
+- If a client goes through NAT or a proxy (Knox, a load balancer in front of WebHDFS), `origin`
+  is taken from the proxy's address.
+
+Client traffic by origin for a day, MiB:
+
+```sql
+SELECT origin, op, SUM(bytes) / 1048576 AS mib, SUM(ops) AS ops
+FROM hdfs_traffic.traffic_minute
+WHERE dt = '2026-11-06' AND role = 'client'
+GROUP BY origin, op
+ORDER BY mib DESC;
+```
 
 ### Query example
 

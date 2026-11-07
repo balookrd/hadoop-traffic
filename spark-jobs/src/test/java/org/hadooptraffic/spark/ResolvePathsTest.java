@@ -209,9 +209,36 @@ public class ResolvePathsTest {
     // liam: dur_ms 10 s, but only 2 s fall on DT.
     assertEquals(2000L, m.get(DAY + "|liam|write|/warehouse/db1/t1")[2]);
     assertEquals(new java.util.HashSet<>(java.util.Arrays.asList("minute", "user", "op", "role",
-        "locality", "table_dir", "bytes", "est_bytes", "ops", "busy_ms")),
+        "locality", "table_dir", "bytes", "est_bytes", "ops", "busy_ms", "origin")),
         new java.util.HashSet<>(java.util.Arrays.asList(
             spark.read().orc(layout.trafficMinute(DT)).schema().fieldNames())));
+  }
+
+  private Map<String, String> originByUser() {
+    Map<String, String> m = new HashMap<>();
+    for (Row r : spark.read().orc(layout.trafficMinute(DT)).collectAsList()) {
+      m.put(r.getString(r.fieldIndex("user")), r.getString(r.fieldIndex("origin")));
+    }
+    return m;
+  }
+
+  @Test
+  public void originFromNets() {
+    // alice's peer is 10.0.0.1, judy's 10.0.0.3; heidi (domain socket) and ivan are local.
+    ResolvePaths.run(spark, layout, DT, IMG, Catalog.NONE, Nets.parse("own=10.0.0.0/31"));
+    Map<String, String> m = originByUser();
+    assertEquals("own", m.get("alice"));
+    assertEquals(Nets.OTHER, m.get("judy"));
+    assertEquals(Nets.LOCAL, m.get("heidi"));
+    assertEquals(Nets.LOCAL, m.get("ivan"));
+  }
+
+  @Test
+  public void originWithoutNets() {
+    ResolvePaths.run(spark, layout, DT, IMG, Catalog.NONE);
+    Map<String, String> m = originByUser();
+    assertEquals(Nets.OTHER, m.get("alice"));
+    assertEquals(Nets.LOCAL, m.get("ivan"));
   }
 
   @Test

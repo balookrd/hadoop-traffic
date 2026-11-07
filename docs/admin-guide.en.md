@@ -445,6 +445,7 @@ Options of both jobs:
 | `--db <name>` | `hdfs_traffic` | Hive database |
 | `--catalog hive\|none` | `hive` | `none` writes files only and registers nothing in Hive |
 | `--image-dt <dt>` | latest image | `ResolvePaths` only: date of the fsimage to use |
+| `--nets name=cidr[,name=cidr...]` | none | `ResolvePaths` only: networks for `traffic_minute.origin`, e.g. `own=10.0.0.0/24,cluster_b=172.16.0.0/24`. Without it remote events get `other`. Rules are in the [README](../README.en.md#access-origin-origin) |
 
 Each run overwrites only its own `dt` partitions, so a failed run is repeated with the same
 `--dt`.
@@ -512,6 +513,7 @@ most 1 hour.
 daily-report.sh -n <active NameNode http URL> [-D <dt>] [-r root] [-w workdir]
                 [-m mapper.jar] [-j spark-jobs.jar] [-c hive|none]
                 [-k keytab -p principal] [-s spark_principal -t spark_keytab]
+                [-N name=cidr[,name=cidr...]]
 ```
 
 | Option | Default | What it does |
@@ -525,6 +527,7 @@ daily-report.sh -n <active NameNode http URL> [-D <dt>] [-r root] [-w workdir]
 | `-c` | `hive` | `--catalog` of the jobs |
 | `-k`, `-p` | none | keytab and principal of the HDFS administrator; both or neither |
 | `-s`, `-t` | none | principal and keytab passed to spark-submit as `--principal/--keytab`; required with `-c hive` or `--master yarn` |
+| `-N` | none | `--nets` for `ResolvePaths` |
 
 Environment variables:
 
@@ -599,14 +602,17 @@ Operations:
 
   Partitions written before the `spark-jobs` upgrade have `peer_ip` NULL. To fill a day,
   rerun it with `-D <dt>`.
-- The column `traffic_minute.busy_ms` was added the same way, after the first installations.
-  Add it once in beeline:
+- The columns `traffic_minute.busy_ms` and `traffic_minute.origin` were added the same way,
+  after the first installations. Add them once in beeline, in this order (the column order of
+  the ORC files matches the DDL):
 
   ```sql
   ALTER TABLE hdfs_traffic.traffic_minute ADD COLUMNS (`busy_ms` BIGINT);
+  ALTER TABLE hdfs_traffic.traffic_minute ADD COLUMNS (`origin` STRING);
   ```
 
-  Partitions written before the `spark-jobs` upgrade have `busy_ms` NULL. To fill a day,
+  If `busy_ms` is already there, run only the second command. Partitions written before the
+  `spark-jobs` upgrade have these columns NULL. To fill a day,
   rerun it with `-D <dt>`.
 
 Known issues:

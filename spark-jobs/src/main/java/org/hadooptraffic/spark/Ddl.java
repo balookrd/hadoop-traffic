@@ -37,7 +37,8 @@ public final class Ddl {
         root + "/event_path"));
     s.add(table(db, TRAFFIC_MINUTE, "`minute` BIGINT, `user` STRING, `op` STRING, "
         + "`role` STRING, `locality` STRING, `table_dir` STRING, `bytes` BIGINT, "
-        + "`est_bytes` BIGINT, `ops` BIGINT, `busy_ms` BIGINT", root + "/traffic_minute"));
+        + "`est_bytes` BIGINT, `ops` BIGINT, `busy_ms` BIGINT, `origin` STRING",
+        root + "/traffic_minute"));
     return s;
   }
 

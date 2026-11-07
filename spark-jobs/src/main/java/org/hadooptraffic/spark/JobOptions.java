@@ -6,7 +6,7 @@ import java.util.regex.Pattern;
 public final class JobOptions {
   public static final String USAGE = "usage: spark-submit --class <job> spark-jobs.jar "
       + "--dt YYYY-MM-DD [--image-dt YYYY-MM-DD] [--root <dir URI>] [--db <name>] "
-      + "[--catalog hive|none]";
+      + "[--catalog hive|none] [--nets name=cidr[,name=cidr...]]";
 
   /** Where partitions are registered. */
   public enum CatalogKind { HIVE, NONE }
@@ -21,6 +21,7 @@ public final class JobOptions {
   private String root = "/data/hdfs-traffic";
   private String db = "hdfs_traffic";
   private CatalogKind catalog = CatalogKind.HIVE;
+  private Nets nets = Nets.NONE;
 
   private JobOptions() {
   }
@@ -31,6 +32,8 @@ public final class JobOptions {
   public String root() { return root; }
   public String db() { return db; }
   public CatalogKind catalog() { return catalog; }
+  /** Named networks for traffic_minute.origin; empty when --nets is not given. */
+  public Nets nets() { return nets; }
 
   public static JobOptions parse(String[] args) {
     JobOptions o = new JobOptions();
@@ -74,6 +77,13 @@ public final class JobOptions {
             o.catalog = CatalogKind.NONE;
           } else {
             throw bad("bad --catalog: " + value);
+          }
+          break;
+        case "--nets":
+          try {
+            o.nets = Nets.parse(value);
+          } catch (IllegalArgumentException e) {
+            throw bad("bad --nets: " + e.getMessage());
           }
           break;
         default:

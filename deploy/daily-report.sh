@@ -33,6 +33,10 @@
 #   CRON_TZ=UTC
 #   0 2 * * * hdfs /opt/hdfs-traffic/daily-report.sh -n http://nn1.example:50070 -k /etc/security/keytabs/hdfs.headless.keytab -p hdfs-cluster@REALM -s spark-report@REALM -t /etc/security/keytabs/spark-report.keytab >>/var/log/hdfs-traffic-report.log 2>&1
 #
+# -N name=cidr[,name=cidr...] names client networks for traffic_minute.origin, e.g.
+#   -N own=10.0.0.0/24,cluster_b=172.16.0.0/24
+# Local clients get origin 'local', remote peers outside these networks get 'other'.
+#
 # The Spark keytab (-t) must be readable by the user running cron. For an HTTPS-only NameNode
 # pass -n https://<nn>:50470.
 set -euo pipefail
@@ -52,21 +56,23 @@ SPARK_PRINCIPAL=
 SPARK_KEYTAB=
 NN_HTTP=
 DAY=
+NETS=
 
 usage() {
   echo "usage: $0 -n <active NameNode http URL> [-D YYYY-MM-DD] [-r root] [-w workdir]" \
     "[-m mapper.jar] [-j spark-jobs.jar] [-c hive|none] [-k hdfs keytab -p hdfs principal]" \
-    "[-s spark principal -t spark keytab]" >&2
+    "[-s spark principal -t spark keytab] [-N name=cidr[,name=cidr...]]" >&2
   exit 2
 }
 die() { echo "daily-report: $*" >&2; exit 1; }
 
-while getopts "r:w:m:j:c:k:p:n:D:s:t:" opt; do
+while getopts "r:w:m:j:c:k:p:n:D:s:t:N:" opt; do
   case "${opt}" in
     r) ROOT=${OPTARG} ;; w) WORK=${OPTARG} ;; m) MAPPER_JAR=${OPTARG} ;;
     j) JOBS_JAR=${OPTARG} ;; c) CATALOG=${OPTARG} ;; k) KEYTAB=${OPTARG} ;;
     p) PRINCIPAL=${OPTARG} ;; n) NN_HTTP=${OPTARG} ;; D) DAY=${OPTARG} ;;
-    s) SPARK_PRINCIPAL=${OPTARG} ;; t) SPARK_KEYTAB=${OPTARG} ;; *) usage ;;
+    s) SPARK_PRINCIPAL=${OPTARG} ;; t) SPARK_KEYTAB=${OPTARG} ;; N) NETS=${OPTARG} ;;
+    *) usage ;;
   esac
 done
 [[ -n "${NN_HTTP}" ]] || usage
@@ -114,6 +120,11 @@ if [[ -n "${DAY}" ]]; then
 else
   dt=$(date -u -d yesterday +%F)
   image_dt_args=(--image-dt "${today}")
+fi
+
+nets_args=()
+if [[ -n "${NETS}" ]]; then
+  nets_args=(--nets "${NETS}")
 fi
 
 spark_auth=()
@@ -187,4 +198,5 @@ fi
   "${JOBS_JAR}" --dt "${dt}" --root "${ROOT}" --catalog "${CATALOG}"
 # shellcheck disable=SC2086
 "${SPARK_SUBMIT}" ${SPARK_ARGS} ${spark_auth[@]+"${spark_auth[@]}"} --class org.hadooptraffic.spark.ResolvePaths \
-  "${JOBS_JAR}" --dt "${dt}" ${image_dt_args[@]+"${image_dt_args[@]}"} --root "${ROOT}" --catalog "${CATALOG}"
+  "${JOBS_JAR}" --dt "${dt}" ${image_dt_args[@]+"${image_dt_args[@]}"} --root "${ROOT}" --catalog "${CATALOG}" \
+  ${nets_args[@]+"${nets_args[@]}"}

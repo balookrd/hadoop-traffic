@@ -62,7 +62,8 @@ public final class ResolvePaths {
     }
     SparkSession spark = Spark.session("ResolvePaths " + o.dt(), o);
     try {
-      Result r = run(spark, new Layout(o.root()), o.dt(), o.imageDt(), Catalog.of(o, spark));
+      Result r = run(spark, new Layout(o.root()), o.dt(), o.imageDt(), Catalog.of(o, spark),
+          o.nets());
       System.out.println("ResolvePaths: dt=" + o.dt() + " image=" + r.imageDt + " events="
           + r.events + " unresolved=" + r.unresolved);
     } finally {
@@ -72,6 +73,11 @@ public final class ResolvePaths {
 
   public static Result run(SparkSession spark, Layout layout, String dt, String imageDt,
       Catalog catalog) {
+    return run(spark, layout, dt, imageDt, catalog, Nets.NONE);
+  }
+
+  public static Result run(SparkSession spark, Layout layout, String dt, String imageDt,
+      Catalog catalog, Nets nets) {
     String image = imageDt != null ? imageDt : Images.latest(fs(spark, layout.fsimageRoot()),
         new Path(layout.fsimageRoot()));
     if (image.compareTo(dt) <= 0) {
@@ -86,6 +92,7 @@ public final class ResolvePaths {
 
     spark.udf().register("table_dir", (UDF1<String, String>) TableDir::of, DataTypes.StringType);
     spark.udf().register("peer_ip", (UDF1<String, String>) PeerIp::of, DataTypes.StringType);
+    spark.udf().register("origin", (UDF1<String, String>) nets::originOf, DataTypes.StringType);
 
     Dataset<Row> events = spark.read().orc(layout.events(dt));
     Dataset<Row> blockInode = spark.read().orc(layout.fsimageTable(image, "block_inode"));
@@ -125,10 +132,16 @@ public final class ResolvePaths {
 
     Dataset<Row> minutes = withBusyMs(eventPath, dayStartMillis(dt))
         .withColumn("minute", col("ts").divide(60_000L).cast("long").multiply(60_000L))
-        .groupBy("minute", "user", "op", "role", "locality", "table_dir")
+        // A local client did not come over the network; remote peers are classified by --nets.
+        .withColumn("origin", when(col("locality").equalTo(lit("local")), lit(Nets.LOCAL))
+            .otherwise(callUDF("origin", col("peer_ip"))))
+        .groupBy("minute", "user", "op", "role", "locality", "table_dir", "origin")
         .agg(sum("bytes").as("bytes"), sum("est_bytes").as("est_bytes"),
             sum(when(col("last"), 1L).otherwise(0L)).as("ops"),
-            sum("busy_ms").as("busy_ms"));
+            sum("busy_ms").as("busy_ms"))
+        // Column order of the DDL, so that Hive reads the files by position as well.
+        .select("minute", "user", "op", "role", "locality", "table_dir", "bytes", "est_bytes",
+            "ops", "busy_ms", "origin");
     String trafficDir = layout.trafficMinute(dt);
     minutes.write().mode(SaveMode.Overwrite).option("compression", "zlib").orc(trafficDir);
     catalog.addPartition(Ddl.TRAFFIC_MINUTE, dt, trafficDir);
