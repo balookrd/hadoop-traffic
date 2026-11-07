@@ -135,13 +135,13 @@ public final class ResolvePaths {
         // A local client did not come over the network; remote peers are classified by --nets.
         .withColumn("origin", when(col("locality").equalTo(lit("local")), lit(Nets.LOCAL))
             .otherwise(callUDF("origin", col("peer_ip"))))
-        .groupBy("minute", "user", "op", "role", "locality", "table_dir", "origin")
+        .groupBy("minute", "user", "op", "role", "locality", "origin", "table_dir")
         .agg(sum("bytes").as("bytes"), sum("est_bytes").as("est_bytes"),
             sum(when(col("last"), 1L).otherwise(0L)).as("ops"),
             sum("busy_ms").as("busy_ms"))
         // Column order of the DDL, so that Hive reads the files by position as well.
-        .select("minute", "user", "op", "role", "locality", "table_dir", "bytes", "est_bytes",
-            "ops", "busy_ms", "origin");
+        .select("minute", "user", "op", "role", "locality", "origin", "table_dir", "bytes",
+            "est_bytes", "ops", "busy_ms");
     String trafficDir = layout.trafficMinute(dt);
     minutes.write().mode(SaveMode.Overwrite).option("compression", "zlib").orc(trafficDir);
     catalog.addPartition(Ddl.TRAFFIC_MINUTE, dt, trafficDir);

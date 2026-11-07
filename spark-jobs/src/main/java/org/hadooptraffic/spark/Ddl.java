@@ -35,9 +35,10 @@ public final class Ddl {
     s.add(table(db, EVENT_PATH,
         EVENT_COLUMNS + ", `inode_id` BIGINT, `table_dir` STRING, `peer_ip` STRING",
         root + "/event_path"));
+    // Dimensions first, then metrics.
     s.add(table(db, TRAFFIC_MINUTE, "`minute` BIGINT, `user` STRING, `op` STRING, "
-        + "`role` STRING, `locality` STRING, `table_dir` STRING, `bytes` BIGINT, "
-        + "`est_bytes` BIGINT, `ops` BIGINT, `busy_ms` BIGINT, `origin` STRING",
+        + "`role` STRING, `locality` STRING, `origin` STRING, `table_dir` STRING, "
+        + "`bytes` BIGINT, `est_bytes` BIGINT, `ops` BIGINT, `busy_ms` BIGINT",
         root + "/traffic_minute"));
     return s;
   }

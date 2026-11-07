@@ -209,7 +209,7 @@ public class ResolvePathsTest {
     // liam: dur_ms 10 s, but only 2 s fall on DT.
     assertEquals(2000L, m.get(DAY + "|liam|write|/warehouse/db1/t1")[2]);
     assertEquals(new java.util.HashSet<>(java.util.Arrays.asList("minute", "user", "op", "role",
-        "locality", "table_dir", "bytes", "est_bytes", "ops", "busy_ms", "origin")),
+        "locality", "origin", "table_dir", "bytes", "est_bytes", "ops", "busy_ms")),
         new java.util.HashSet<>(java.util.Arrays.asList(
             spark.read().orc(layout.trafficMinute(DT)).schema().fieldNames())));
   }
