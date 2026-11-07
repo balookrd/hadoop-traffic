@@ -356,13 +356,13 @@ hdfs dfs -test -d /data/hdfs-traffic/events/dt=<dt> \
 inode: блок → inode, inode → родитель и имя. Spark-джобы по ней превращают `file_block_id`
 события в текущий путь файла (см. [Отчёты](../README.md#отчёты-spark-jobs)).
 
-Собирайте его с профилем версии Hadoop кластера: сгенерированные protobuf-классы fsimage в
-3.1 и 3.3 разные, и jar, собранный под одну версию, не читает образ другой.
-
-```bash
-mvn clean verify -P hadoop-3.1.1      # HDP
-mvn clean verify -P hadoop-3.3.6      # Apache Hadoop 3.3.x
-```
+Один jar работает на Hadoop 3.1 и 3.3. Wire-формат fsimage `block-mapper` разбирает сам и
+использует только публичный API `hadoop-common` (`Configuration`, `FileSystem`, кодеки
+сжатия). Сгенерированные классы `FsImageProto` из `hadoop-hdfs` он не использует: в 3.1 они
+собраны под `com.google.protobuf` 2.5, в 3.3 — под затенённый
+`org.apache.hadoop.thirdparty.protobuf`, и байткод, скомпилированный под одну версию, падает
+на другой с `NoSuchMethodError`. Номера полей fsimage сверяет тест `FsImageSchemaTest`
+с каждой версией Hadoop, под которую идёт сборка.
 
 В jar входят `orc-core` 1.5.13, `orc-shims`, `hive-storage-api`, `aircompressor`,
 `commons-lang` 2.6 и `threeten-extra`, перенесённые в пакет
@@ -376,7 +376,7 @@ mvn clean verify -P hadoop-3.3.6      # Apache Hadoop 3.3.x
 
 ```bash
 hdfs dfsadmin -fetchImage /data/fsimg
-hadoop jar block-mapper-<version>-hadoop-3.1.1.jar org.hadooptraffic.mapper.FsImageMapper \
+hadoop jar block-mapper-<version>.jar org.hadooptraffic.mapper.FsImageMapper \
   -i /data/fsimg/fsimage_<txid> -o hdfs:///data/hdfs-traffic/fsimage/dt=<dt> [--format tsv]
 ```
 

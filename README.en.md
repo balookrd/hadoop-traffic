@@ -65,8 +65,8 @@ mvn clean verify -P hadoop-3.3.6   # Apache Hadoop 3.3.x (the default profile)
 
 Run one build, with the profile of the cluster's Hadoop line. The profile sets the Hadoop
 version the tests run against (MiniDFSCluster, MiniKDC). Hadoop is a `provided` dependency
-and is not bundled. The jars of the agent and `spark-jobs` are the same for both lines;
-`block-mapper` has to be built for the cluster's line (see
+and is not bundled. The jars of all three modules are the same for both lines (for
+`block-mapper` see
 [Block-to-file mapping](docs/admin-guide.en.md#block-to-file-mapping-block-mapper)).
 
 Build distributable jars with `clean`: without it the shade plugin re-shades the already
@@ -77,7 +77,7 @@ Output:
 | Module | Jar |
 |---|---|
 | agent | `agent/target/hdfs-traffic-agent-<version>.jar` |
-| block-mapper | `block-mapper/target/block-mapper-<version>-hadoop-<hadoop version>.jar` |
+| block-mapper | `block-mapper/target/block-mapper-<version>.jar` |
 | spark-jobs | `spark-jobs/target/spark-jobs-<version>.jar` |
 
 ### CI and releases
@@ -101,8 +101,8 @@ A release build sets the version with `versions-maven-plugin` before `mvn verify
 The tag has to look like `vMAJOR.MINOR.PATCH`, otherwise `Tag Release` fails at the
 `Resolve Maven version` step.
 
-A release carries four jars and `SHA256SUMS.txt`: the agent and `spark-jobs` (the same for both
-Hadoop lines) and `block-mapper` for `hadoop-3.1.1` and `hadoop-3.3.6`. The release notes are
+A release carries three jars (the agent, `block-mapper`, `spark-jobs`; the same for both Hadoop
+lines) and `SHA256SUMS.txt`. The release notes are
 built by `git-cliff` from `cliff.toml` out of the commits since the previous tag: commits that
 start with `feat`, `Add`, `Support`, `Introduce` (Features), `fix`, `Fix`, `Close`, `Handle`
 (Bug fixes), `perf`, `Optimize`, `Speed` (Performance) get in; the rest are skipped.

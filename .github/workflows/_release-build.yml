@@ -104,26 +104,21 @@ jobs:
           VERSION: ${{ steps.maven-version.outputs.version }}
         run: mvn -B -q "${VERSIONS_PLUGIN}:set" -DnewVersion="$VERSION" -DgenerateBackupPoms=false
 
-      # The agent and spark-jobs jars do not depend on the Hadoop line; block-mapper
-      # does, so it ships once per profile. `clean` keeps shade from re-shading.
-      - name: Build and test (hadoop-3.1.1)
-        run: mvn -B clean verify -P hadoop-3.1.1
-
-      - name: Stage block-mapper for hadoop-3.1.1
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          cp block-mapper/target/block-mapper-*-hadoop-3.1.1.jar dist/
-
+      # The jars do not depend on the Hadoop line: both profiles only run the tests
+      # against it. The shipped jars come from the last build, compiled against the
+      # oldest supported line. `clean` keeps shade from re-shading.
       - name: Build and test (hadoop-3.3.6)
         run: mvn -B clean verify -P hadoop-3.3.6
+
+      - name: Build and test (hadoop-3.1.1)
+        run: mvn -B clean verify -P hadoop-3.1.1
 
       - name: Stage release assets
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
+          mkdir -p dist
           for jar in agent/target/*.jar block-mapper/target/*.jar spark-jobs/target/*.jar; do
             # Skip the pre-shade jars kept by maven-shade-plugin.
             [[ "$(basename "$jar")" == original-* ]] && continue
@@ -131,8 +126,8 @@ jobs:
           done
           cd dist
           count=$(find . -maxdepth 1 -name '*.jar' | wc -l)
-          if (( count != 4 )); then
-            echo "Expected 4 jars (agent, spark-jobs, block-mapper x2), got ${count}:" >&2
+          if (( count != 3 )); then
+            echo "Expected 3 jars (agent, block-mapper, spark-jobs), got ${count}:" >&2
             ls -l >&2
             exit 1
           fi

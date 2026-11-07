@@ -356,13 +356,13 @@ Events carry block ids only. `block-mapper` reads a downloaded fsimage and write
 model: block → inode, inode → parent and name. The Spark jobs use it to turn an event's
 `file_block_id` into the current path of the file (see [Reports](../README.en.md#reports-spark-jobs)).
 
-Build it with the profile of the cluster's Hadoop line: the generated protobuf classes of
-the fsimage differ between 3.1 and 3.3, and a jar built for one line does not read the other.
-
-```bash
-mvn clean verify -P hadoop-3.1.1      # HDP
-mvn clean verify -P hadoop-3.3.6      # Apache Hadoop 3.3.x
-```
+One jar runs on Hadoop 3.1 and 3.3. `block-mapper` decodes the fsimage wire format itself
+and uses only public `hadoop-common` API (`Configuration`, `FileSystem`, compression codecs).
+It does not use the generated `FsImageProto` classes from `hadoop-hdfs`: in 3.1 they are
+built against `com.google.protobuf` 2.5, in 3.3 against the shaded
+`org.apache.hadoop.thirdparty.protobuf`, and bytecode compiled against one line fails on the
+other with `NoSuchMethodError`. `FsImageSchemaTest` checks the fsimage field numbers against
+each Hadoop version the build runs with.
 
 The jar bundles `orc-core` 1.5.13, `orc-shims`, `hive-storage-api`, `aircompressor`,
 `commons-lang` 2.6 and `threeten-extra`, relocated under `org.hadooptraffic.mapper.shaded`,
@@ -375,7 +375,7 @@ as an HDFS cluster administrator (a member of `dfs.cluster.administrators`, for 
 
 ```bash
 hdfs dfsadmin -fetchImage /data/fsimg
-hadoop jar block-mapper-<version>-hadoop-3.1.1.jar org.hadooptraffic.mapper.FsImageMapper \
+hadoop jar block-mapper-<version>.jar org.hadooptraffic.mapper.FsImageMapper \
   -i /data/fsimg/fsimage_<txid> -o hdfs:///data/hdfs-traffic/fsimage/dt=<dt> [--format tsv]
 ```
 

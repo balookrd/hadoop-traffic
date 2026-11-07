@@ -13,7 +13,7 @@ import org.apache.hadoop.fs.Path;
  *
  * <pre>
  * hdfs dfsadmin -fetchImage /data/fsimg
- * hadoop jar block-mapper-&lt;ver&gt;-hadoop-&lt;x&gt;.jar org.hadooptraffic.mapper.FsImageMapper \
+ * hadoop jar block-mapper-&lt;ver&gt;.jar org.hadooptraffic.mapper.FsImageMapper \
  *   -i /data/fsimg/fsimage_&lt;txid&gt; -o hdfs:///data/hdfs-traffic/fsimage/dt=&lt;date&gt;
  * </pre>
  */

@@ -47,17 +47,20 @@
       <version>${hadoop.version}</version>
       <scope>provided</scope>
     </dependency>
+
+    <!-- Tests only: MiniDFSCluster and FsImageSchemaTest. Main code must not use HDFS internals,
+         whose protobuf classes differ between Hadoop 3.1 and 3.3 (see FsImageReader). -->
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-hdfs</artifactId>
       <version>${hadoop.version}</version>
-      <scope>provided</scope>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-hdfs-client</artifactId>
       <version>${hadoop.version}</version>
-      <scope>provided</scope>
+      <scope>test</scope>
     </dependency>
 
     <dependency>
@@ -90,7 +93,8 @@
   </dependencies>
 
   <build>
-    <finalName>block-mapper-${project.version}-hadoop-${hadoop.version}</finalName>
+    <!-- One jar for every supported Hadoop line: it uses only public hadoop-common API. -->
+    <finalName>block-mapper-${project.version}</finalName>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

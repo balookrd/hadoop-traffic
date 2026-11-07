@@ -67,8 +67,8 @@ mvn clean verify -P hadoop-3.3.6   # Apache Hadoop 3.3.x (профиль по у
 
 Соберите один раз, с профилем той версии Hadoop, что стоит на кластере. Профиль задаёт
 версию Hadoop, на которой идут тесты (MiniDFSCluster, MiniKDC). Hadoop подключён как
-`provided` и в jar не попадает. Jar агента и `spark-jobs` одинаковы для обеих версий;
-`block-mapper` нужно собирать под версию кластера (см.
+`provided` и в jar не попадает. Jar всех трёх модулей одинаковы для обеих версий (для
+`block-mapper` см.
 [Сопоставление блоков и файлов](docs/admin-guide.md#сопоставление-блоков-и-файлов-block-mapper)).
 
 Jar для раздачи собирайте с `clean`: без него shade-плагин повторно шейдит уже зашейденный
@@ -79,7 +79,7 @@ jar.
 | Модуль | Jar |
 |---|---|
 | agent | `agent/target/hdfs-traffic-agent-<version>.jar` |
-| block-mapper | `block-mapper/target/block-mapper-<version>-hadoop-<версия hadoop>.jar` |
+| block-mapper | `block-mapper/target/block-mapper-<version>.jar` |
 | spark-jobs | `spark-jobs/target/spark-jobs-<version>.jar` |
 
 ### CI и релизы
@@ -103,8 +103,8 @@ Workflow лежат в `.github/workflows/`, сборка везде идёт н
 Тег должен иметь вид `vMAJOR.MINOR.PATCH`, иначе `Tag Release` падает на шаге
 `Resolve Maven version`.
 
-В релиз входят четыре jar и `SHA256SUMS.txt`: агент и `spark-jobs` (одни и те же для обеих
-версий Hadoop) и `block-mapper` под `hadoop-3.1.1` и `hadoop-3.3.6`. Release notes собирает
+В релиз входят три jar (агент, `block-mapper`, `spark-jobs`; одни и те же для обеих версий
+Hadoop) и `SHA256SUMS.txt`. Release notes собирает
 `git-cliff` по `cliff.toml` из коммитов с прошлого тега: в них попадают коммиты, начинающиеся
 с `feat`, `Add`, `Support`, `Introduce` (Features), `fix`, `Fix`, `Close`, `Handle` (Bug fixes),
 `perf`, `Optimize`, `Speed` (Performance); остальные пропускаются.

@@ -129,7 +129,7 @@ as_hdfs "rm -rf /tmp/fsimg && mkdir -p /tmp/fsimg \
   && hdfs dfsadmin -safemode leave >/dev/null \
   && hdfs dfsadmin -D dfs.namenode.http-address=tr-nn.traffic-net:9870 -fetchImage /tmp/fsimg >/dev/null \
   && hdfs dfs -rm -r -f -skipTrash /data/hdfs-traffic/fsimage/dt=${dt} >/dev/null \
-  && hadoop jar /opt/block-mapper/block-mapper-0.1.0-SNAPSHOT-hadoop-*.jar \
+  && hadoop jar /opt/block-mapper/block-mapper-0.1.0-SNAPSHOT.jar \
        org.hadooptraffic.mapper.FsImageMapper -i \$(ls /tmp/fsimg/fsimage_* | grep -v md5 | sort | tail -1) \
        -o hdfs:///data/hdfs-traffic/fsimage/dt=${dt}"
 
