@@ -214,6 +214,9 @@ LIMIT 20;
 
 `user` and `start` are reserved words in Hive 3: write them in backquotes in beeline.
 
+How one operation goes from JSONL to `traffic_minute`, and how to compute an operation's speed
+from `dur_ms`, is shown on example data in [docs/data-examples.en.md](docs/data-examples.en.md).
+
 ## Docker stand
 
 `stand/` runs the agent on a secure cluster in Docker: an MIT KDC, a NameNode, three

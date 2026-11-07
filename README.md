@@ -217,6 +217,9 @@ LIMIT 20;
 
 `user` и `start` — зарезервированные слова в Hive 3: в beeline берите их в обратные кавычки.
 
+Как одна операция проходит от JSONL до `traffic_minute` и как посчитать скорость операции по
+`dur_ms`, показано на примере данных в [docs/data-examples.md](docs/data-examples.md).
+
 ## Docker-стенд
 
 `stand/` запускает агент на защищённом кластере в Docker: MIT KDC, NameNode, три DataNode с
