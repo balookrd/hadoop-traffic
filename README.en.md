@@ -148,7 +148,8 @@ What the jobs do:
   not overwrite the partition. `*._COPYING_` files of an unfinished `put` are not read. A
   missing raw partition fails the job.
 - `ResolvePaths` joins the events of `<dt>` with the fsimage model and writes
-  `<root>/event_path/dt=<dt>` (events plus `inode_id` and `table_dir`, with `path` filled in)
+  `<root>/event_path/dt=<dt>` (events plus `inode_id`, `table_dir` and `peer_ip`, with `path`
+  filled in)
   and `<root>/traffic_minute/dt=<dt>`.
   - The image is `--image-dt`; by default the latest `fsimage/dt=<dt>` whose `meta/` holds an
     `.orc` file (hidden temporary directories are skipped).
@@ -168,7 +169,7 @@ Tables:
 |---|---|
 | `events` | the event fields of the JSONL (`ts`, `start`, `dn`, `op_id`, `user`, `op`, `role`, `locality`, `bpid`, `block_id`, `file_block_id`, `bytes`, `est_bytes`, `dur_ms`, `last`, `peer`, `path`) |
 | `fs_inode`, `fs_edge`, `fs_block_inode`, `fs_meta` | the block-mapper tables; `dt` is the image date |
-| `event_path` | the `events` columns plus `inode_id`, `table_dir` |
+| `event_path` | the `events` columns plus `inode_id`, `table_dir`, `peer_ip` (the address from `peer` without the port; only when `locality = remote`, otherwise NULL) |
 | `traffic_minute` | `minute` (epoch ms of the UTC minute start), `user`, `op`, `role`, `locality`, `table_dir`, `bytes`, `est_bytes`, `ops` (number of `last` events) |
 
 All tables are EXTERNAL ORC with ZLIB. The DDL is in `hive/schema.sql`, generated from

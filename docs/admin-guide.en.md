@@ -589,6 +589,16 @@ Operations:
 
 - After changing `--root`, move existing tables with `ALTER TABLE ... SET LOCATION`:
   `ADD IF NOT EXISTS PARTITION` keeps the old locations of existing partitions.
+- The column `event_path.peer_ip` was added to the schema after the first installations.
+  `CREATE TABLE IF NOT EXISTS` does not change an existing table, so Hive does not see the
+  column there even though new ORC files contain it. Add the column once in beeline:
+
+  ```sql
+  ALTER TABLE hdfs_traffic.event_path ADD COLUMNS (`peer_ip` STRING);
+  ```
+
+  Partitions written before the `spark-jobs` upgrade have `peer_ip` NULL. To fill a day,
+  rerun it with `-D <dt>`.
 
 Known issues:
 

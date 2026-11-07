@@ -1,6 +1,8 @@
 package org.hadooptraffic.spark;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -82,8 +84,13 @@ public class ResolvePathsTest {
 
   private static Row ev(long ts, String user, String op, long block, long bytes, boolean last,
       String path) {
-    return RowFactory.create(ts, ts - 1000, "dn1", "p-" + ts, user, op, "client", "remote",
-        block == -1 ? null : "BP-1", block, block, bytes, 0L, 1000L, last, "/10.0.0.1:1", path);
+    return ev(ts, user, op, "remote", "/10.0.0.1:1", block, bytes, last, path);
+  }
+
+  private static Row ev(long ts, String user, String op, String locality, String peer,
+      long block, long bytes, boolean last, String path) {
+    return RowFactory.create(ts, ts - 1000, "dn1", "p-" + ts, user, op, "client", locality,
+        block == -1 ? null : "BP-1", block, block, bytes, 0L, 1000L, last, peer, path);
   }
 
   private void events() {
@@ -98,6 +105,10 @@ public class ResolvePathsTest {
     rows.add(ev(T + 6_000, "erin", "write", 1006, 7, true, null));
     rows.add(ev(T + 7_000, "frank", "webhdfs_create", -1, 9, true, "/traffic/web.bin"));
     rows.add(ev(T + 8_000, "grace", "read", 9999, 3, true, null));
+    rows.add(ev(T + 9_000, "heidi", "scr_fds", "local", "unix:/var/lib/hadoop-hdfs/dn_socket",
+        1001, 0, true, null));
+    rows.add(ev(T + 9_500, "ivan", "read", "local", "/10.0.0.9:2", 1001, 4, true, null));
+    rows.add(ev(T + 9_800, "judy", "transfer", "remote", "10.0.0.3:50010", 1001, 6, true, null));
     orc(rows, EventSchema.SCHEMA, layout.events(DT));
   }
 
@@ -122,7 +133,7 @@ public class ResolvePathsTest {
   public void resolvesPathsAndTableDirs() throws Exception {
     ResolvePaths.Result r = ResolvePaths.run(spark, layout, DT, null, Catalog.NONE);
     assertEquals(IMG, r.imageDt);
-    assertEquals(10L, r.events);
+    assertEquals(13L, r.events);
     assertEquals(2L, r.unresolved);  // erin (snapshot-only inode) and grace (unknown block)
 
     Map<String, String> m = pathsByUser();
@@ -140,6 +151,20 @@ public class ResolvePathsTest {
     assertEquals("/traffic/web.bin|/traffic", m.get("frank/" + (T + 7_000)));
     assertEquals("?|?", m.get("grace/" + (T + 8_000)));
     assertEquals("ZLIB", LocalSpark.orcCompressionOfDir(layout.eventPath(DT)));
+  }
+
+  @Test
+  public void peerIpOnlyForRemotePeers() {
+    ResolvePaths.run(spark, layout, DT, IMG, Catalog.NONE);
+    Map<String, String> m = new HashMap<>();
+    for (Row r : spark.read().orc(layout.eventPath(DT)).collectAsList()) {
+      m.put(r.getString(r.fieldIndex("user")), r.getString(r.fieldIndex("peer_ip")));
+    }
+    assertEquals("10.0.0.1", m.get("alice"));
+    assertEquals("10.0.0.3", m.get("judy"));     // DataNode transfer: "ip:port"
+    assertNull(m.get("heidi"));                  // domain socket
+    assertNull(m.get("ivan"));                   // local TCP peer
+    assertTrue(m.containsKey("ivan"));
   }
 
   @Test
@@ -171,6 +196,6 @@ public class ResolvePathsTest {
     long first = spark.read().orc(layout.trafficMinute(DT)).count();
     ResolvePaths.run(spark, layout, DT, IMG, Catalog.NONE);
     assertEquals(first, spark.read().orc(layout.trafficMinute(DT)).count());
-    assertEquals(10L, spark.read().orc(layout.eventPath(DT)).count());
+    assertEquals(13L, spark.read().orc(layout.eventPath(DT)).count());
   }
 }

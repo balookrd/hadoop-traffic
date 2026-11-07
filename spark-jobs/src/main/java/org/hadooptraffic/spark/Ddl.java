@@ -32,7 +32,8 @@ public final class Ddl {
     s.add(table(db, FS_BLOCK_INODE, "`block_id` BIGINT, `inode_id` BIGINT", root + "/fsimage"));
     s.add(table(db, FS_META, "`txid` BIGINT, `image_file` STRING, `parsed_at` BIGINT",
         root + "/fsimage"));
-    s.add(table(db, EVENT_PATH, EVENT_COLUMNS + ", `inode_id` BIGINT, `table_dir` STRING",
+    s.add(table(db, EVENT_PATH,
+        EVENT_COLUMNS + ", `inode_id` BIGINT, `table_dir` STRING, `peer_ip` STRING",
         root + "/event_path"));
     s.add(table(db, TRAFFIC_MINUTE, "`minute` BIGINT, `user` STRING, `op` STRING, "
         + "`role` STRING, `locality` STRING, `table_dir` STRING, `bytes` BIGINT, "

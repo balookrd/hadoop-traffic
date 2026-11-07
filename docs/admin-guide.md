@@ -592,6 +592,16 @@ CRON_TZ=UTC
 
 - После смены `--root` перенесите существующие таблицы через `ALTER TABLE ... SET LOCATION`:
   `ADD IF NOT EXISTS PARTITION` оставляет старые локации существующих партиций.
+- Колонка `event_path.peer_ip` добавлена в схему позже первых установок. `CREATE TABLE IF NOT
+  EXISTS` не меняет существующую таблицу, поэтому на ней Hive не видит колонку, хотя новые
+  ORC-файлы её содержат. Добавьте колонку в beeline один раз:
+
+  ```sql
+  ALTER TABLE hdfs_traffic.event_path ADD COLUMNS (`peer_ip` STRING);
+  ```
+
+  В партициях, записанных до обновления `spark-jobs`, `peer_ip` равен NULL. Чтобы заполнить
+  день, перезапустите его с `-D <dt>`.
 
 Известные проблемы:
 

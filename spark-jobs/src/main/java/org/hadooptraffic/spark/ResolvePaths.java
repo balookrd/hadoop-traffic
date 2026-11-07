@@ -79,6 +79,7 @@ public final class ResolvePaths {
     catalog.addPartition(Ddl.FS_META, image, layout.fsimageTable(image, "meta"));
 
     spark.udf().register("table_dir", (UDF1<String, String>) TableDir::of, DataTypes.StringType);
+    spark.udf().register("peer_ip", (UDF1<String, String>) PeerIp::of, DataTypes.StringType);
 
     Dataset<Row> events = spark.read().orc(layout.events(dt));
     Dataset<Row> blockInode = spark.read().orc(layout.fsimageTable(image, "block_inode"));
@@ -107,6 +108,9 @@ public final class ResolvePaths {
     cols.add(col("f.inode_id").as("inode_id"));
     Dataset<Row> eventPath = joined.select(cols.toArray(new Column[0]))
         .withColumn("table_dir", callUDF("table_dir", col("path")))
+        // Only remote peers: a local peer is this DataNode's own host or a domain socket.
+        .withColumn("peer_ip", when(col("locality").equalTo(lit("remote")),
+            callUDF("peer_ip", col("peer"))).otherwise(lit(null).cast("string")))
         .localCheckpoint();
 
     String eventPathDir = layout.eventPath(dt);

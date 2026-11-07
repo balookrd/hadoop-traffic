@@ -151,7 +151,8 @@ block-mapper в поминутный трафик по пользователя�
   перезаписывает партицию. Файлы `*._COPYING_` незаконченного `put` не читаются.
   Отсутствующая сырая партиция роняет джобу.
 - `ResolvePaths` соединяет события дня `<dt>` с моделью fsimage и пишет
-  `<root>/event_path/dt=<dt>` (события плюс `inode_id` и `table_dir`, с заполненным `path`) и
+  `<root>/event_path/dt=<dt>` (события плюс `inode_id`, `table_dir` и `peer_ip`, с заполненным
+  `path`) и
   `<root>/traffic_minute/dt=<dt>`.
   - Образ — `--image-dt`; по умолчанию последний `fsimage/dt=<dt>`, в `meta/` которого есть
     `.orc`-файл (скрытые временные каталоги пропускаются).
@@ -171,7 +172,7 @@ block-mapper в поминутный трафик по пользователя�
 |---|---|
 | `events` | поля событий JSONL (`ts`, `start`, `dn`, `op_id`, `user`, `op`, `role`, `locality`, `bpid`, `block_id`, `file_block_id`, `bytes`, `est_bytes`, `dur_ms`, `last`, `peer`, `path`) |
 | `fs_inode`, `fs_edge`, `fs_block_inode`, `fs_meta` | таблицы block-mapper; `dt` — дата образа |
-| `event_path` | колонки `events` плюс `inode_id`, `table_dir` |
+| `event_path` | колонки `events` плюс `inode_id`, `table_dir`, `peer_ip` (адрес из `peer` без порта; только при `locality = remote`, иначе NULL) |
 | `traffic_minute` | `minute` (epoch, мс начала минуты UTC), `user`, `op`, `role`, `locality`, `table_dir`, `bytes`, `est_bytes`, `ops` (число событий `last`) |
 
 Все таблицы — EXTERNAL ORC с ZLIB. DDL лежит в `hive/schema.sql`, сгенерированном из
