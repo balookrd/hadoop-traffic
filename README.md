@@ -82,6 +82,49 @@ jar.
 | block-mapper | `block-mapper/target/block-mapper-<version>-hadoop-<версия hadoop>.jar` |
 | spark-jobs | `spark-jobs/target/spark-jobs-<version>.jar` |
 
+### CI и релизы
+
+Workflow лежат в `.github/workflows/`, сборка везде идёт на JDK 8 (temurin).
+
+| Workflow | Когда запускается | Что делает |
+|---|---|---|
+| `CI` | push в любую ветку, кроме `main`; pull request; вручную | `mvn clean verify` с профилями `hadoop-3.3.6` и `hadoop-3.1.1`, jar в артефактах workflow на 14 дней |
+| `Nightly Release` | push в `main`; вручную | сборка и тесты с обоими профилями, перенос тега `nightly` на текущий коммит, обновление prerelease `Nightly` |
+| `Tag Release` | push тега `v*` | сборка и тесты с обоими профилями, публикация GitHub release с этим тегом |
+| `Release` | вручную, из `main`, с параметром `MAJOR.MINOR` | вычисляет следующий тег `vMAJOR.MINOR.PATCH` и печатает команды для его создания; сам ничего не публикует |
+
+В `pom.xml` версия остаётся `0.1.0-SNAPSHOT`: под этим именем jar ищет Docker-стенд. Релизная
+сборка перед `mvn verify` проставляет версию через `versions-maven-plugin`:
+
+- `Tag Release` — версия из тега без `v`: тег `v0.2.0` даёт `hdfs-traffic-agent-0.2.0.jar`;
+- `Nightly Release` — последний достижимый тег `v*` и короткий SHA коммита, например
+  `0.2.0-a3a47887`; без тегов — `0.0.0-<sha>`.
+
+Тег должен иметь вид `vMAJOR.MINOR.PATCH`, иначе `Tag Release` падает на шаге
+`Resolve Maven version`.
+
+В релиз входят четыре jar и `SHA256SUMS.txt`: агент и `spark-jobs` (одни и те же для обеих
+версий Hadoop) и `block-mapper` под `hadoop-3.1.1` и `hadoop-3.3.6`. Release notes собирает
+`git-cliff` по `cliff.toml` из коммитов с прошлого тега: в них попадают коммиты, начинающиеся
+с `feat`, `Add`, `Support`, `Introduce` (Features), `fix`, `Fix`, `Close`, `Handle` (Bug fixes),
+`perf`, `Optimize`, `Speed` (Performance); остальные пропускаются.
+
+Выпуск релиза:
+
+1. Запустите workflow `Release` на ветке `main` с `MAJOR.MINOR`, например `0.1`. В логе шага
+   `Next steps` будет следующий тег, например `v0.1.0`.
+2. Создайте подписанный тег на `main` и отправьте его:
+
+   ```bash
+   git fetch origin
+   git checkout main
+   git pull --ff-only origin main
+   git tag -s v0.1.0 -m "v0.1.0"
+   git push origin v0.1.0
+   ```
+
+3. Дождитесь `Tag Release`: релиз появится на странице Releases репозитория.
+
 ## Метрики
 
 JMX-бин `Hadoop:service=DataNode,name=UserTraffic`. Что в нём есть, зависит от опций:

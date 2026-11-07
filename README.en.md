@@ -80,6 +80,49 @@ Output:
 | block-mapper | `block-mapper/target/block-mapper-<version>-hadoop-<hadoop version>.jar` |
 | spark-jobs | `spark-jobs/target/spark-jobs-<version>.jar` |
 
+### CI and releases
+
+The workflows live in `.github/workflows/`; every build runs on JDK 8 (temurin).
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `CI` | push to any branch except `main`; pull request; manual | `mvn clean verify` with the `hadoop-3.3.6` and `hadoop-3.1.1` profiles, jars kept as workflow artifacts for 14 days |
+| `Nightly Release` | push to `main`; manual | build and tests with both profiles, moves the `nightly` tag to the current commit, updates the `Nightly` prerelease |
+| `Tag Release` | push of a `v*` tag | build and tests with both profiles, publishes a GitHub release for the tag |
+| `Release` | manual, from `main`, with a `MAJOR.MINOR` input | computes the next `vMAJOR.MINOR.PATCH` tag and prints the commands to create it; publishes nothing itself |
+
+`pom.xml` keeps the version `0.1.0-SNAPSHOT`: the Docker stand looks the jars up by that name.
+A release build sets the version with `versions-maven-plugin` before `mvn verify`:
+
+- `Tag Release`: the tag without `v`, so tag `v0.2.0` gives `hdfs-traffic-agent-0.2.0.jar`;
+- `Nightly Release`: the latest reachable `v*` tag plus the short commit SHA, for example
+  `0.2.0-a3a47887`; with no tags, `0.0.0-<sha>`.
+
+The tag has to look like `vMAJOR.MINOR.PATCH`, otherwise `Tag Release` fails at the
+`Resolve Maven version` step.
+
+A release carries four jars and `SHA256SUMS.txt`: the agent and `spark-jobs` (the same for both
+Hadoop lines) and `block-mapper` for `hadoop-3.1.1` and `hadoop-3.3.6`. The release notes are
+built by `git-cliff` from `cliff.toml` out of the commits since the previous tag: commits that
+start with `feat`, `Add`, `Support`, `Introduce` (Features), `fix`, `Fix`, `Close`, `Handle`
+(Bug fixes), `perf`, `Optimize`, `Speed` (Performance) get in; the rest are skipped.
+
+Cutting a release:
+
+1. Run the `Release` workflow on `main` with `MAJOR.MINOR`, for example `0.1`. The log of the
+   `Next steps` step shows the next tag, for example `v0.1.0`.
+2. Create a signed tag on `main` and push it:
+
+   ```bash
+   git fetch origin
+   git checkout main
+   git pull --ff-only origin main
+   git tag -s v0.1.0 -m "v0.1.0"
+   git push origin v0.1.0
+   ```
+
+3. Wait for `Tag Release`: the release shows up on the repository's Releases page.
+
 ## Metrics
 
 JMX bean `Hadoop:service=DataNode,name=UserTraffic`. Its content depends on the options:

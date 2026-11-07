@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    # main is built and tested by the Nightly Release workflow.
+    branches-ignore:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # One build per supported Hadoop line: the profile selects the Hadoop
+        # version used by tests (MiniDFSCluster, MiniKDC) and the block-mapper jar.
+        profile:
+          - hadoop-3.3.6
+          - hadoop-3.1.1
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      # The agent needs a full JDK 8 with lib/tools.jar.
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+
+      # `clean` is required: without it the shade plugin re-shades an already shaded jar.
+      - name: Build and test
+        run: mvn -B clean verify -P ${{ matrix.profile }}
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-${{ matrix.profile }}
+          path: |
+            */target/surefire-reports/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Stage jars
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          shopt -s nullglob
+          jars=()
+          for jar in agent/target/*.jar block-mapper/target/*.jar spark-jobs/target/*.jar; do
+            # Skip the pre-shade jars kept by maven-shade-plugin.
+            [[ "$(basename "$jar")" == original-* ]] && continue
+            jars+=("$jar")
+          done
+          if (( ${#jars[@]} == 0 )); then
+            echo "No jars produced" >&2
+            exit 1
+          fi
+          cp "${jars[@]}" dist/
+          cd dist
+          sha256sum ./*.jar > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload jars
+        uses: actions/upload-artifact@v4
+        with:
+          name: hadoop-traffic-${{ matrix.profile }}
+          path: |
+            dist/*.jar
+            dist/SHA256SUMS.txt
+          retention-days: 14
+          if-no-files-found: error
