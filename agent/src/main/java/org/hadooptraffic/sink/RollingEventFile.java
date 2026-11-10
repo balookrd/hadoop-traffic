@@ -6,6 +6,8 @@ import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.Writer;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -76,7 +78,8 @@ final class RollingEventFile implements Closeable {
    * event of a later UTC day closes the current file first; an earlier day never does.
    */
   void write(String line, long tsMillis) throws IOException {
-    if (out != null && tsMillis / DAY_MS > fileDay) {
+    // openedMillis, not out: a file abandoned after an I/O error still has its day.
+    if (openedMillis >= 0 && tsMillis / DAY_MS > fileDay) {
       rotate();
     }
     if (out == null) {
@@ -122,7 +125,11 @@ final class RollingEventFile implements Closeable {
     cleanup();
   }
 
-  /** After an I/O error: forget the writer; the next write reopens (and rotates leftovers). */
+  /**
+   * After an I/O error: forget the writer but keep the file; the next write appends to it.
+   * Rotating it instead would close a fragment per failed batch (several per second on a
+   * full disk) and let those fragments push complete unshipped files out of maxFiles.
+   */
   void abandon() {
     if (out != null) {
       try {
@@ -161,8 +168,12 @@ final class RollingEventFile implements Closeable {
 
   private void open(long tsMillis) throws IOException {
     Files.createDirectories(dir);
+    if (openedMillis >= 0 && Files.exists(active)) {
+      resume();
+      return;
+    }
     if (Files.exists(active) && Files.size(active) > 0) {
-      // Left over from a crash or an earlier I/O error: close it out first.
+      // Left over from a crash: close it out first.
       rotate();
     }
     out = Files.newBufferedWriter(active, UTF_8, StandardOpenOption.CREATE,
@@ -171,6 +182,29 @@ final class RollingEventFile implements Closeable {
     openedAtClock = clock.currentTimeMillis();
     fileDay = tsMillis / DAY_MS;
     size = 0;
+  }
+
+  /**
+   * Reopens the file this instance abandoned, keeping its open time, day and age. A line cut
+   * short by the error is terminated so that the next event starts on its own line.
+   */
+  private void resume() throws IOException {
+    long onDisk = Files.size(active);
+    boolean torn = onDisk > 0 && lastByte(onDisk) != '\n';
+    out = Files.newBufferedWriter(active, UTF_8, StandardOpenOption.APPEND);
+    size = onDisk;
+    if (torn) {
+      out.write('\n');
+      size++;
+    }
+  }
+
+  private int lastByte(long fileSize) throws IOException {
+    try (SeekableByteChannel ch = Files.newByteChannel(active, StandardOpenOption.READ)) {
+      ByteBuffer b = ByteBuffer.allocate(1);
+      ch.position(fileSize - 1);
+      return ch.read(b) == 1 ? b.get(0) : -1;
+    }
   }
 
   /** UTC time of a leftover file: ts of its first event, else its mtime. */

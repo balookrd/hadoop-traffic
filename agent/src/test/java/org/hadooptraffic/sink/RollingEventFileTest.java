@@ -204,7 +204,7 @@ public class RollingEventFileTest {
   }
 
   @Test
-  public void abandonedFileKeepsItsOpenTime() throws Exception {
+  public void abandonedFileIsResumedAndKeepsItsOpenTime() throws Exception {
     Path active = tmp.getRoot().toPath().resolve("events.jsonl");
     RollingEventFile f = file(active, 1 << 20, 3_600_000, 10);
     f.write("a", clock.currentTimeMillis());
@@ -213,11 +213,99 @@ public class RollingEventFileTest {
     clock.advanceSec(600);
     f.write("b", clock.currentTimeMillis());
     f.flush();
+    assertEquals(0, f.closedFiles().size());
+    assertEquals(Arrays.asList("a", "b"), Files.readAllLines(active, UTF_8));
+    f.rotate();
+    assertEquals("events-20261106-101500-000000.jsonl",
+        f.closedFiles().get(0).getFileName().toString());
+  }
+
+  @Test
+  public void repeatedWriteErrorsDoNotEvictClosedFiles() throws Exception {
+    Path active = tmp.getRoot().toPath().resolve("events.jsonl");
+    RollingEventFile f = file(active, 1 << 20, 300_000, 2);
+    for (int i = 0; i < 2; i++) {
+      f.write("full" + i, clock.currentTimeMillis());
+      f.rotate();
+      clock.advanceSec(1);
+    }
+    // A full disk: every batch gets partly written, then fails and is abandoned.
+    for (int i = 0; i < 5; i++) {
+      f.write("partial" + i, clock.currentTimeMillis());
+      f.flush();
+      f.abandon();
+    }
+    List<Path> closed = f.closedFiles();
+    assertEquals(2, closed.size());
+    assertEquals(Collections.singletonList("full0"), Files.readAllLines(closed.get(0), UTF_8));
+    assertEquals(0L, f.filesDropped());
+  }
+
+  @Test
+  public void tornLastLineIsTerminatedOnResume() throws Exception {
+    Path active = tmp.getRoot().toPath().resolve("events.jsonl");
+    RollingEventFile f = file(active, 1 << 20, 300_000, 10);
+    f.write("a", clock.currentTimeMillis());
+    f.flush();
+    f.abandon();
+    Files.write(active, "{\"torn".getBytes(UTF_8), java.nio.file.StandardOpenOption.APPEND);
+    f.write("b", clock.currentTimeMillis());
+    f.flush();
+    assertEquals(Arrays.asList("a", "{\"torn", "b"), Files.readAllLines(active, UTF_8));
+  }
+
+  @Test
+  public void resumedFileStillRotatesBySizeAndAge() throws Exception {
+    Path active = tmp.getRoot().toPath().resolve("events.jsonl");
+    RollingEventFile f = file(active, 10, 300_000, 10);
+    f.write("12345", clock.currentTimeMillis());
+    f.flush();
+    f.abandon();
+    f.write("67890", clock.currentTimeMillis());
+    f.flush();
+    f.maybeRotate(); // 12 bytes on disk >= 10
+    assertFalse(Files.exists(active));
+    assertEquals(1, f.closedFiles().size());
+
+    f.write("x", clock.currentTimeMillis());
+    f.flush();
+    f.abandon();
+    clock.advanceSec(300);
+    f.write("y", clock.currentTimeMillis());
+    f.flush();
+    f.maybeRotate();
+    assertFalse(Files.exists(active));
+    assertEquals(2, f.closedFiles().size());
+  }
+
+  @Test
+  public void abandonedFileIsClosedByAnEventOfTheNextDay() throws Exception {
+    Path active = tmp.getRoot().toPath().resolve("events.jsonl");
+    RollingEventFile f = file(active, 1 << 20, 300_000, 10);
+    f.write("first", BEFORE_MIDNIGHT);
+    f.flush();
+    f.abandon();
+    f.write("second", BEFORE_MIDNIGHT + 2_000);
+    f.flush();
     List<Path> closed = f.closedFiles();
     assertEquals(1, closed.size());
-    assertEquals("events-20261106-101500-000000.jsonl", closed.get(0).getFileName().toString());
-    assertEquals(Collections.singletonList("a"), Files.readAllLines(closed.get(0), UTF_8));
-    assertEquals(Collections.singletonList("b"), Files.readAllLines(active, UTF_8));
+    assertEquals(Collections.singletonList("first"), Files.readAllLines(closed.get(0), UTF_8));
+    assertEquals(Collections.singletonList("second"), Files.readAllLines(active, UTF_8));
+  }
+
+  @Test
+  public void abandonedFileThatDisappearedIsReplacedByANewOne() throws Exception {
+    Path active = tmp.getRoot().toPath().resolve("events.jsonl");
+    RollingEventFile f = file(active, 1 << 20, 300_000, 10);
+    f.write("a", clock.currentTimeMillis());
+    f.flush();
+    f.abandon();
+    Files.delete(active);
+    clock.advanceSec(60);
+    f.write("b", clock.currentTimeMillis());
+    f.rotate();
+    assertEquals("events-20261106-101600-000000.jsonl",
+        f.closedFiles().get(0).getFileName().toString());
   }
 
   @Test
