@@ -52,6 +52,8 @@ public class CompactEventsTest {
 
     assertEquals(2L, r.written);
     assertEquals(1L, r.malformed);
+    // deploy/daily-report.sh -K deletes a raw partition only when this marker exists.
+    assertTrue(new File(tmp.getRoot(), "events/dt=2026-11-06/_SUCCESS").isFile());
     List<Row> rows = spark.read().orc(layout.events("2026-11-06"))
         .orderBy("ts").collectAsList();
     assertEquals(2, rows.size());

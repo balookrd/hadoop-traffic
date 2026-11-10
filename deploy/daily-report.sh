@@ -39,6 +39,13 @@
 #
 # The Spark keytab (-t) must be readable by the user running cron. For an HTTPS-only NameNode
 # pass -n https://<nn>:50470.
+#
+# Raw retention: -K <days> removes <root>/raw/dt=<d> for every d more than <days> days before
+# the report day, after both Spark jobs succeeded. A partition goes only if
+# <root>/events/dt=<d>/_SUCCESS exists (CompactEvents finished for that day); others are kept
+# and reported. Without -K nothing is ever removed. With -K, -D refuses a day whose raw
+# partition is already past retention: CompactEvents would overwrite events/dt=<day> with
+# whatever late files a DataNode shipped after the removal.
 set -euo pipefail
 
 ROOT=/data/hdfs-traffic
@@ -57,24 +64,29 @@ SPARK_KEYTAB=
 NN_HTTP=
 DAY=
 NETS=
+RAW_KEEP_DAYS=
 
 usage() {
   echo "usage: $0 -n <active NameNode http URL> [-D YYYY-MM-DD] [-r root] [-w workdir]" \
     "[-m mapper.jar] [-j spark-jobs.jar] [-c hive|none] [-k hdfs keytab -p hdfs principal]" \
-    "[-s spark principal -t spark keytab] [-N name=cidr[,name=cidr...]]" >&2
+    "[-s spark principal -t spark keytab] [-N name=cidr[,name=cidr...]] [-K raw_keep_days]" >&2
   exit 2
 }
 die() { echo "daily-report: $*" >&2; exit 1; }
 
-while getopts "r:w:m:j:c:k:p:n:D:s:t:N:" opt; do
+while getopts "r:w:m:j:c:k:p:n:D:s:t:N:K:" opt; do
   case "${opt}" in
     r) ROOT=${OPTARG} ;; w) WORK=${OPTARG} ;; m) MAPPER_JAR=${OPTARG} ;;
     j) JOBS_JAR=${OPTARG} ;; c) CATALOG=${OPTARG} ;; k) KEYTAB=${OPTARG} ;;
     p) PRINCIPAL=${OPTARG} ;; n) NN_HTTP=${OPTARG} ;; D) DAY=${OPTARG} ;;
     s) SPARK_PRINCIPAL=${OPTARG} ;; t) SPARK_KEYTAB=${OPTARG} ;; N) NETS=${OPTARG} ;;
+    K) RAW_KEEP_DAYS=${OPTARG} ;;
     *) usage ;;
   esac
 done
+if [[ -n "${RAW_KEEP_DAYS}" ]] && ! [[ "${RAW_KEEP_DAYS}" =~ ^[0-9]{1,4}$ ]]; then
+  die "bad -K (expected a number of days): ${RAW_KEEP_DAYS}"
+fi
 [[ -n "${NN_HTTP}" ]] || usage
 NN_HTTP=${NN_HTTP%/}
 [[ "${CATALOG}" == hive || "${CATALOG}" == none ]] || usage
@@ -97,6 +109,16 @@ if [[ -z "${SPARK_PRINCIPAL}" && ( "${CATALOG}" == hive || "${SPARK_ARGS}" == *y
   die "-s <spark principal> -t <spark keytab> are required with -c hive or --master yarn"
 fi
 command -v python3 >/dev/null 2>&1 || die "python3 is required to parse NameNode JMX"
+
+if [[ -n "${DAY}" && -n "${RAW_KEEP_DAYS}" ]]; then
+  # The daily run of today keeps raw partitions from (yesterday - K) on.
+  oldest_kept=$(date -u -d "$(date -u +%F) $(( RAW_KEEP_DAYS + 1 )) days ago" +%F)
+  if [[ "${DAY}" < "${oldest_kept}" ]]; then
+    die "-D ${DAY} is before ${oldest_kept}, the oldest raw partition kept by -K" \
+      "${RAW_KEEP_DAYS}: a rerun would overwrite events/dt=${DAY} with incomplete data." \
+      "If ${ROOT}/raw/dt=${DAY} is still complete, rerun without -K"
+  fi
+fi
 
 mkdir -p "${WORK}"
 exec 9>"${WORK}/.lock"
@@ -200,3 +222,27 @@ fi
 "${SPARK_SUBMIT}" ${SPARK_ARGS} ${spark_auth[@]+"${spark_auth[@]}"} --class org.hadooptraffic.spark.ResolvePaths \
   "${JOBS_JAR}" --dt "${dt}" ${image_dt_args[@]+"${image_dt_args[@]}"} --root "${ROOT}" --catalog "${CATALOG}" \
   ${nets_args[@]+"${nets_args[@]}"}
+
+# Raw retention (-K): only after both jobs succeeded, only days CompactEvents finished.
+if [[ -n "${RAW_KEEP_DAYS}" ]]; then
+  cutoff=$(date -u -d "${dt} ${RAW_KEEP_DAYS} days ago" +%F)
+  raw_dirs=$(hdfs dfs -ls -C "${ROOT}/raw")
+  # No match is not an error: then nothing is compacted and nothing is removed.
+  compacted=$(hdfs dfs -ls -C "${ROOT}/events/dt=*/_SUCCESS" 2>/dev/null || true)
+  doomed=()
+  for p in ${raw_dirs}; do
+    [[ "${p##*/}" =~ ^dt=([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]] || continue
+    d=${BASH_REMATCH[1]}
+    [[ "${d}" < "${cutoff}" ]] || continue
+    if [[ $'\n'"${compacted}"$'\n' == *"/events/dt=${d}/_SUCCESS"$'\n'* ]]; then
+      doomed+=("${p}")
+    else
+      echo "daily-report: keeping ${p}: no ${ROOT}/events/dt=${d}/_SUCCESS," \
+        "the day is not compacted" >&2
+    fi
+  done
+  if (( ${#doomed[@]} > 0 )); then
+    hdfs dfs -rm -r -skipTrash "${doomed[@]}"
+    echo "daily-report: removed ${#doomed[@]} raw partition(s) before ${cutoff}"
+  fi
+fi

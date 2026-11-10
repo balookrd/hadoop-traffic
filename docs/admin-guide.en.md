@@ -373,21 +373,47 @@ Before turning on `userMetrics=true`:
 
 ### Raw file retention
 
-No component deletes `<raw_root>/dt=<dt>`: `CompactEvents` only reads it. With rotation every
-300 seconds each DataNode puts at least 288 files a day, 500 DataNodes at least 144k files a
-day. These are objects in NameNode memory and the space from the volume table.
+Without `-K` in `daily-report.sh` no component deletes `<raw_root>/dt=<dt>`: `CompactEvents`
+only reads it. With rotation every 300 seconds each DataNode puts at least 288 files a day,
+500 DataNodes at least 144k files a day. These are objects in NameNode memory and the space
+from the volume table.
 
-Delete a raw partition after a successful `CompactEvents`, keeping a few days for
-`daily-report.sh -D` reruns. Before deleting, check that the compacted partition exists:
+`daily-report.sh -K <days>` deletes old raw partitions at the end of a run, after
+`CompactEvents` and `ResolvePaths` both succeeded. Add it to the cron entry of the daily run
+(see [Daily run](#daily-run)):
+
+- It deletes every `<root>/raw/dt=<d>` where `<d>` is more than `<days>` days before the
+  report day. A run at 02:00 UTC on November 10 with `-K 3` reports November 9, keeps
+  November 6 and later and deletes November 5 and earlier.
+- A partition is deleted only if `<root>/events/dt=<d>/_SUCCESS` exists, the marker Spark
+  writes when `CompactEvents` finishes that day. Otherwise the partition stays and the run
+  prints `daily-report: keeping <path>: no <root>/events/dt=<d>/_SUCCESS, the day is not compacted`
+  to stderr on every run. Rerun that day with `-D` while it is within `<days>`, or delete the
+  partition by hand.
+- The deletion is `hdfs dfs -rm -r -skipTrash` as the HDFS administrator the script runs as;
+  the files do not go to the trash.
+- The script deletes under `<root>/raw` (`-r` of `daily-report.sh`). `upload-events.sh -r`
+  must point to the same directory.
+
+Choose `<days>` by how far back you rerun days with `-D`. `-K 0` keeps only the report day.
+
+A DataNode that was down longer than `<days>` ships its buffered files after it starts, into
+partitions that are already deleted. Those events do not get into the reports, and the next
+run deletes the partition again.
+
+**Warning:** do not rerun with `-D` a day whose raw partition was deleted. If the partition
+is absent, `CompactEvents` fails and `events/dt=<dt>` stays as it was. If late files from a
+DataNode created it again, `CompactEvents` overwrites `events/dt=<dt>` with those files only,
+and the rest of the day is lost: the raw files it was built from no longer exist. With `-K`
+the script refuses such a day and exits with code 1 and
+`daily-report: -D <dt> is before <date>, the oldest raw partition kept by -K <days>`.
+
+To delete one partition by hand (`<dt>` is the day as `YYYY-MM-DD`):
 
 ```bash
-hdfs dfs -test -d /data/hdfs-traffic/events/dt=<dt> \
+hdfs dfs -test -e /data/hdfs-traffic/events/dt=<dt>/_SUCCESS \
   && hdfs dfs -rm -r -skipTrash /data/hdfs-traffic/raw/dt=<dt>
 ```
-
-`<dt>` is the day as `YYYY-MM-DD`. After the deletion that day can no longer be rerun with
-`-D`: `CompactEvents` fails on the missing raw partition, and `events/dt=<dt>` stays as it
-was.
 
 ### Pilot
 
@@ -630,7 +656,7 @@ most 1 hour.
 daily-report.sh -n <active NameNode http URL> [-D <dt>] [-r root] [-w workdir]
                 [-m mapper.jar] [-j spark-jobs.jar] [-c hive|none]
                 [-k keytab -p principal] [-s spark_principal -t spark_keytab]
-                [-N name=cidr[,name=cidr...]]
+                [-N name=cidr[,name=cidr...]] [-K raw_keep_days]
 ```
 
 | Option | Default | What it does |
@@ -645,6 +671,7 @@ daily-report.sh -n <active NameNode http URL> [-D <dt>] [-r root] [-w workdir]
 | `-k`, `-p` | none | keytab and principal of the HDFS administrator; both or neither |
 | `-s`, `-t` | none | principal and keytab passed to spark-submit as `--principal/--keytab`; required with `-c hive` or `--master yarn` |
 | `-N` | none | `--nets` for `ResolvePaths` |
+| `-K` | none | delete compacted raw partitions more than this many days before the report day (see [Raw file retention](#raw-file-retention)); without it nothing is deleted |
 
 Environment variables:
 
@@ -667,6 +694,7 @@ Steps of a run without `-D`:
 2. Fetch the image with `hdfs dfsadmin -fetchImage` into `<workdir>/fsimg` and run
    block-mapper into `<root>/fsimage/dt=<today>`.
 3. Run `CompactEvents` and `ResolvePaths` for yesterday with `--image-dt <today>`.
+4. With `-K`, delete old raw partitions (see [Raw file retention](#raw-file-retention)).
 
 A second run while one is going exits with code 0 and a message (`flock` on
 `<workdir>/.lock`). The downloaded image is deleted on exit.

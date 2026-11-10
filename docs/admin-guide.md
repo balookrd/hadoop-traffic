@@ -377,22 +377,49 @@ DataNode. Счётчики не сбрасываются до перезапус
 
 ### Ретенция сырых файлов
 
-Ни один компонент не удаляет `<raw_root>/dt=<dt>`: `CompactEvents` только читает её. При
-ротации раз в 300 секунд каждая DataNode кладёт не меньше 288 файлов в сутки, 500 DataNode
-— не меньше 144 тыс. файлов в сутки. Это объекты в памяти NameNode и место из таблицы
-объёма.
+Без `-K` в `daily-report.sh` ни один компонент не удаляет `<raw_root>/dt=<dt>`:
+`CompactEvents` только читает её. При ротации раз в 300 секунд каждая DataNode кладёт не
+меньше 288 файлов в сутки, 500 DataNode — не меньше 144 тыс. файлов в сутки. Это объекты в
+памяти NameNode и место из таблицы объёма.
 
-Удаляйте сырую партицию после успешного `CompactEvents`, оставив несколько дней на
-перезапуски `daily-report.sh -D`. Перед удалением проверьте, что сжатая партиция есть:
+`daily-report.sh -K <days>` удаляет старые сырые партиции в конце запуска, после успешных
+`CompactEvents` и `ResolvePaths`. Добавьте опцию в запись cron ежедневного запуска (см.
+[Ежедневный запуск](#ежедневный-запуск)):
+
+- Удаляется каждая `<root>/raw/dt=<d>`, где `<d>` раньше дня отчёта больше чем на `<days>`
+  дней. Запуск в 02:00 UTC 10 ноября с `-K 3` строит отчёт за 9 ноября, оставляет 6 ноября
+  и позже, удаляет 5 ноября и раньше.
+- Партиция удаляется, только если есть `<root>/events/dt=<d>/_SUCCESS` — маркер, который
+  Spark пишет, когда `CompactEvents` закончил этот день. Иначе партиция остаётся, и каждый
+  запуск пишет в stderr
+  `daily-report: keeping <path>: no <root>/events/dt=<d>/_SUCCESS, the day is not compacted`.
+  Перезапустите этот день через `-D`, пока он в пределах `<days>`, или удалите партицию
+  вручную.
+- Удаление — `hdfs dfs -rm -r -skipTrash` от администратора HDFS, от которого работает
+  скрипт; в корзину файлы не попадают.
+- Скрипт удаляет под `<root>/raw` (`-r` у `daily-report.sh`). `upload-events.sh -r` должен
+  указывать на тот же каталог.
+
+`<days>` выбирайте по тому, на сколько дней назад вы перезапускаете дни через `-D`. `-K 0`
+оставляет только день отчёта.
+
+DataNode, которая была выключена дольше `<days>`, после старта отправляет накопленные файлы
+в уже удалённые партиции. Эти события в отчёты не попадают, а партицию удаляет следующий
+запуск.
+
+**Внимание:** не перезапускайте через `-D` день, сырая партиция которого удалена. Если
+партиции нет, `CompactEvents` падает, а `events/dt=<dt>` остаётся прежней. Если её заново
+создали поздние файлы какой-то DataNode, `CompactEvents` перезаписывает `events/dt=<dt>`
+только этими файлами, и остальной день потерян: сырых файлов, из которых он был собран,
+уже нет. С `-K` скрипт отказывается от такого дня: код выхода 1 и сообщение
+`daily-report: -D <dt> is before <date>, the oldest raw partition kept by -K <days>`.
+
+Удалить одну партицию вручную (`<dt>` — день в формате `YYYY-MM-DD`):
 
 ```bash
-hdfs dfs -test -d /data/hdfs-traffic/events/dt=<dt> \
+hdfs dfs -test -e /data/hdfs-traffic/events/dt=<dt>/_SUCCESS \
   && hdfs dfs -rm -r -skipTrash /data/hdfs-traffic/raw/dt=<dt>
 ```
-
-`<dt>` — день в формате `YYYY-MM-DD`. После удаления перезапуск этого дня через `-D`
-невозможен: `CompactEvents` падает на отсутствующей сырой партиции, а
-`events/dt=<dt>` остаётся прежней.
 
 ### Пилот
 
@@ -633,7 +660,7 @@ standby NameNode (HA) или SecondaryNameNode, `dfs.namenode.checkpoint.period`
 daily-report.sh -n <active NameNode http URL> [-D <dt>] [-r root] [-w workdir]
                 [-m mapper.jar] [-j spark-jobs.jar] [-c hive|none]
                 [-k keytab -p principal] [-s spark_principal -t spark_keytab]
-                [-N name=cidr[,name=cidr...]]
+                [-N name=cidr[,name=cidr...]] [-K raw_keep_days]
 ```
 
 | Опция | По умолчанию | Что делает |
@@ -648,6 +675,7 @@ daily-report.sh -n <active NameNode http URL> [-D <dt>] [-r root] [-w workdir]
 | `-k`, `-p` | нет | keytab и principal администратора HDFS; оба или ни одного |
 | `-s`, `-t` | нет | principal и keytab для spark-submit (`--principal/--keytab`); обязательны с `-c hive` или `--master yarn` |
 | `-N` | нет | `--nets` для `ResolvePaths` |
+| `-K` | нет | удалять сжатые сырые партиции старше этого числа дней до дня отчёта (см. [Ретенция сырых файлов](#ретенция-сырых-файлов)); без опции ничего не удаляется |
 
 Переменные окружения:
 
@@ -670,6 +698,7 @@ daily-report.sh -n <active NameNode http URL> [-D <dt>] [-r root] [-w workdir]
 2. Скачивает образ через `hdfs dfsadmin -fetchImage` в `<workdir>/fsimg` и запускает
    block-mapper в `<root>/fsimage/dt=<today>`.
 3. Запускает `CompactEvents` и `ResolvePaths` за вчера с `--image-dt <today>`.
+4. С `-K` удаляет старые сырые партиции (см. [Ретенция сырых файлов](#ретенция-сырых-файлов)).
 
 Второй запуск, пока идёт первый, выходит с кодом 0 и сообщением (`flock` на
 `<workdir>/.lock`). Скачанный образ удаляется при выходе.
