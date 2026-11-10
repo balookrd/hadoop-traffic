@@ -6,7 +6,9 @@
 # e.g. RHEL/CentOS 7) or from cron, -j <sec> sleeps a random 0..sec seconds first:
 #   */5 * * * * hdfs /opt/hdfs-traffic-agent/upload-events.sh -j 240 \
 #       -d /var/log/hadoop/hdfs-traffic -r /data/hdfs-traffic/raw \
-#       -k /etc/security/keytabs/hdfs.headless.keytab -p hdfs@REALM
+#       -k /etc/security/keytabs/hdfs-traffic.keytab -p hdfs-traffic@REALM
+# Use a principal that can only write under the HDFS root (-r), not the HDFS superuser: the
+# keytab lies on every DataNode. See "Principal for the upload" in docs/admin-guide.en.md.
 # Files are shipped in batches: one "hdfs dfs -mkdir" for all target directories and one
 # "hdfs dfs -put" per target directory and batch (-b files), instead of a JVM per file.
 # Closed files are immutable and carry the UTC date of their events in the name, so a re-run

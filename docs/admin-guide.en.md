@@ -32,6 +32,19 @@ every user is counted as `__unknown__`.
 On every DataNode:
 
 1. Copy the jar to `/opt/hdfs-traffic-agent/hdfs-traffic-agent.jar`.
+
+   Check that the DataNode user can read it (`hdfs` here; substitute your DataNode user):
+
+   ```bash
+   sudo -u hdfs test -r /opt/hdfs-traffic-agent/hdfs-traffic-agent.jar && echo ok
+   ```
+
+   **Warning:** finish this step on every DataNode before step 2. `hadoop-env.sh` managed by
+   Ambari is the same on all hosts, and a JVM whose `-javaagent` points to a missing or
+   unreadable file does not start: the DataNode exits at startup, and its `.out` file in the
+   DataNode log directory has `Error opening zip file or JAR manifest missing` and
+   `agent library failed to init: instrument`. The agent cannot catch this, because its code
+   is not loaded yet. To recover, copy the jar to the host and start the DataNode.
 2. Add the agent to the DataNode JVM options in `hadoop-env.sh`. On HDP edit it in Ambari:
    **HDFS → Configs → Advanced hadoop-env → hadoop-env template**.
 
@@ -138,7 +151,7 @@ upload-events.sh [-d events_dir] [-r hdfs_root] [-n file_prefix] [-k keytab -p p
 | `-d` | `/var/log/hadoop/hdfs-traffic` | events directory (the directory of the agent's `events` file) |
 | `-r` | `/data/hdfs-traffic/raw` | HDFS root of the raw files (`<raw_root>`) |
 | `-n` | `events` | file name prefix (the name of the `events` file without `.jsonl`) |
-| `-k`, `-p` | none | keytab and principal for `kinit`; omit both without Kerberos |
+| `-k`, `-p` | none | keytab and principal for `kinit` (see [Principal for the upload](#principal-for-the-upload)); omit both without Kerberos |
 | `-H` | `hostname -f` | node key in the `dn=` partition; it may differ from the `dn` field inside the events |
 | `-b` | 100 | files per `hdfs dfs -put` |
 | `-j` | 0 | sleep a random 0..N seconds before starting |
@@ -155,6 +168,64 @@ How a run works:
   safe because closed files never change.
 
 The writes of the upload into HDFS appear as traffic of the user it runs as.
+
+### Principal for the upload
+
+On a cluster with Kerberos the upload needs a principal whose keytab lies on every DataNode.
+Create a separate one that owns `<raw_root>` and has no other rights; below it is
+`hdfs-traffic@<realm>`, where `<realm>` is the Kerberos realm of the cluster. Do not use the
+HDFS superuser keytab (`hdfs.headless.keytab` on HDP): whoever reads that file on one of the
+DataNodes gets superuser access to the whole HDFS.
+
+Without Kerberos skip this section: the upload writes as the OS user it runs as.
+
+1. Create the principal and export its keytab once. With MIT Kerberos, on the KDC host as
+   root:
+
+   ```bash
+   kadmin.local -q "addprinc -randkey hdfs-traffic@<realm>"
+   kadmin.local -q "ktadd -k /root/hdfs-traffic.keytab hdfs-traffic@<realm>"
+   ```
+
+   Do not repeat `ktadd` per host: every `ktadd` generates new keys, and `kinit` with the
+   copies exported before it fails. With another KDC (Active Directory, FreeIPA) export the
+   keytab with its own tools.
+2. Copy the keytab to every DataNode, readable only by the OS user that runs the upload
+   (`hdfs` in the systemd unit and in the cron example):
+
+   ```bash
+   install -o hdfs -m 0400 hdfs-traffic.keytab /etc/security/keytabs/hdfs-traffic.keytab
+   ```
+
+3. As the HDFS superuser, create `<raw_root>` and give it to the new user:
+
+   ```bash
+   hdfs dfs -mkdir -p /data/hdfs-traffic/raw
+   hdfs dfs -chown -R hdfs-traffic /data/hdfs-traffic/raw
+   ```
+
+   The owner is the short name that `hadoop.security.auth_to_local` gives the principal.
+   Check it if the cluster has custom rules; the command prints the principal and its short
+   name:
+
+   ```bash
+   hadoop org.apache.hadoop.security.HadoopKerberosName hdfs-traffic@<realm>
+   ```
+
+   The upload creates `dt=<dt>/dn=<host>` under `<raw_root>` itself. With the default
+   `fs.permissions.umask-mode=022` they are readable by every user, including the one
+   `CompactEvents` runs as.
+4. On one DataNode check that the OS user gets a ticket from the keytab:
+
+   ```bash
+   sudo -u hdfs env KRB5CCNAME=FILE:/tmp/hdfs-traffic-check.krb5cc \
+       kinit -kt /etc/security/keytabs/hdfs-traffic.keytab hdfs-traffic@<realm> \
+     && sudo -u hdfs rm /tmp/hdfs-traffic-check.krb5cc
+   ```
+
+   No output and exit code 0 mean the keytab works.
+
+Pass the keytab and the principal to the script as `-k` and `-p`.
 
 ### Running the upload from a systemd timer
 
@@ -211,7 +282,7 @@ Without systemd, use cron with `-j`, so that the nodes do not start together. On
 line:
 
 ```
-*/5 * * * * hdfs /opt/hdfs-traffic-agent/upload-events.sh -j 240 -d /var/log/hadoop/hdfs-traffic -r /data/hdfs-traffic/raw -k /etc/security/keytabs/hdfs.headless.keytab -p hdfs@<realm>
+*/5 * * * * hdfs /opt/hdfs-traffic-agent/upload-events.sh -j 240 -d /var/log/hadoop/hdfs-traffic -r /data/hdfs-traffic/raw -k /etc/security/keytabs/hdfs-traffic.keytab -p hdfs-traffic@<realm>
 ```
 
 ## Running on a large cluster

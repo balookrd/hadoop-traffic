@@ -32,6 +32,21 @@
 На каждой DataNode:
 
 1. Скопируйте jar в `/opt/hdfs-traffic-agent/hdfs-traffic-agent.jar`.
+
+   Проверьте, что пользователь DataNode может его прочитать (здесь `hdfs`; подставьте
+   своего пользователя DataNode):
+
+   ```bash
+   sudo -u hdfs test -r /opt/hdfs-traffic-agent/hdfs-traffic-agent.jar && echo ok
+   ```
+
+   **Внимание:** выполните этот шаг на всех DataNode до шага 2. `hadoop-env.sh` под
+   управлением Ambari одинаков на всех хостах, а JVM, у которой `-javaagent` указывает на
+   отсутствующий или нечитаемый файл, не стартует: DataNode завершается при запуске, в её
+   `.out`-файле в каталоге логов DataNode — строки
+   `Error opening zip file or JAR manifest missing` и
+   `agent library failed to init: instrument`. Агент перехватить это не может: его код ещё
+   не загружен. Чтобы восстановить узел, скопируйте jar на хост и запустите DataNode.
 2. Добавьте агент в JVM-опции DataNode в `hadoop-env.sh`. На HDP это делается в Ambari:
    **HDFS → Configs → Advanced hadoop-env → hadoop-env template**.
 
@@ -139,7 +154,7 @@ upload-events.sh [-d events_dir] [-r hdfs_root] [-n file_prefix] [-k keytab -p p
 | `-d` | `/var/log/hadoop/hdfs-traffic` | каталог событий (каталог файла из опции агента `events`) |
 | `-r` | `/data/hdfs-traffic/raw` | корень сырых файлов в HDFS (`<raw_root>`) |
 | `-n` | `events` | префикс имён файлов (имя файла `events` без `.jsonl`) |
-| `-k`, `-p` | нет | keytab и principal для `kinit`; без Kerberos не указывайте оба |
+| `-k`, `-p` | нет | keytab и principal для `kinit` (см. [Principal для отправки](#principal-для-отправки)); без Kerberos не указывайте оба |
 | `-H` | `hostname -f` | ключ узла в партиции `dn=`; может отличаться от поля `dn` в событиях |
 | `-b` | 100 | файлов на один `hdfs dfs -put` |
 | `-j` | 0 | перед стартом подождать случайные 0..N секунд |
@@ -156,6 +171,64 @@ upload-events.sh [-d events_dir] [-r hdfs_root] [-n file_prefix] [-k keytab -p p
   это безопасно, потому что закрытые файлы не меняются.
 
 Запись в HDFS самой отправкой видна как трафик пользователя, от которого она запущена.
+
+### Principal для отправки
+
+На кластере с Kerberos отправке нужен principal, keytab которого лежит на каждой DataNode.
+Заведите отдельный principal, который владеет `<raw_root>` и не имеет других прав; ниже это
+`hdfs-traffic@<realm>`, где `<realm>` — Kerberos-realm кластера. Не используйте keytab
+суперпользователя HDFS (на HDP — `hdfs.headless.keytab`): тот, кто прочитает этот файл на
+одной из DataNode, получит права суперпользователя на весь HDFS.
+
+Без Kerberos пропустите этот раздел: отправка пишет от пользователя ОС, от которого запущена.
+
+1. Создайте principal и выпустите его keytab один раз. Для MIT Kerberos, на хосте KDC от
+   root:
+
+   ```bash
+   kadmin.local -q "addprinc -randkey hdfs-traffic@<realm>"
+   kadmin.local -q "ktadd -k /root/hdfs-traffic.keytab hdfs-traffic@<realm>"
+   ```
+
+   Не повторяйте `ktadd` для каждого хоста: каждый `ktadd` генерирует новые ключи, и `kinit`
+   с копиями, выпущенными до него, падает. В другом KDC (Active Directory, FreeIPA)
+   выпустите keytab его средствами.
+2. Скопируйте keytab на каждую DataNode с правом чтения только для пользователя ОС, от
+   которого запускается отправка (`hdfs` в юните systemd и в примере cron):
+
+   ```bash
+   install -o hdfs -m 0400 hdfs-traffic.keytab /etc/security/keytabs/hdfs-traffic.keytab
+   ```
+
+3. От суперпользователя HDFS создайте `<raw_root>` и отдайте его новому пользователю:
+
+   ```bash
+   hdfs dfs -mkdir -p /data/hdfs-traffic/raw
+   hdfs dfs -chown -R hdfs-traffic /data/hdfs-traffic/raw
+   ```
+
+   Владелец — короткое имя, которое `hadoop.security.auth_to_local` даёт этому principal.
+   Проверьте его, если на кластере свои правила; команда печатает principal и его короткое
+   имя:
+
+   ```bash
+   hadoop org.apache.hadoop.security.HadoopKerberosName hdfs-traffic@<realm>
+   ```
+
+   Каталоги `dt=<dt>/dn=<host>` под `<raw_root>` отправка создаёт сама. При значении по
+   умолчанию `fs.permissions.umask-mode=022` их может читать любой пользователь, в том
+   числе тот, от которого работает `CompactEvents`.
+4. На одной DataNode проверьте, что пользователь ОС получает тикет по keytab:
+
+   ```bash
+   sudo -u hdfs env KRB5CCNAME=FILE:/tmp/hdfs-traffic-check.krb5cc \
+       kinit -kt /etc/security/keytabs/hdfs-traffic.keytab hdfs-traffic@<realm> \
+     && sudo -u hdfs rm /tmp/hdfs-traffic-check.krb5cc
+   ```
+
+   Пустой вывод и код выхода 0 значат, что keytab рабочий.
+
+Передайте keytab и principal скрипту в `-k` и `-p`.
 
 ### Запуск отправки по таймеру systemd
 
@@ -212,7 +285,7 @@ upload-events.sh [-d events_dir] [-r hdfs_root] [-n file_prefix] [-k keytab -p p
 строка:
 
 ```
-*/5 * * * * hdfs /opt/hdfs-traffic-agent/upload-events.sh -j 240 -d /var/log/hadoop/hdfs-traffic -r /data/hdfs-traffic/raw -k /etc/security/keytabs/hdfs.headless.keytab -p hdfs@<realm>
+*/5 * * * * hdfs /opt/hdfs-traffic-agent/upload-events.sh -j 240 -d /var/log/hadoop/hdfs-traffic -r /data/hdfs-traffic/raw -k /etc/security/keytabs/hdfs-traffic.keytab -p hdfs-traffic@<realm>
 ```
 
 ## Запуск на большом кластере
